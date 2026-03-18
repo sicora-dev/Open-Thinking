@@ -1,0 +1,68 @@
+# OpenMind Pipeline Configuration
+# Docs: https://github.com/your-org/openmind
+
+name: feature-development
+version: "1.0"
+
+context:
+  backend: sqlite
+  vector: embedded
+  ttl: 7d
+
+providers:
+  anthropic:
+    type: openai-compatible
+    base_url: https://api.anthropic.com/v1
+    api_key: ${ANTHROPIC_API_KEY}
+
+  moonshot:
+    type: openai-compatible
+    base_url: https://api.moonshot.cn/v1
+    api_key: ${KIMI_API_KEY}
+
+  local:
+    type: ollama
+    base_url: http://localhost:11434
+
+stages:
+  planning:
+    provider: anthropic
+    model: claude-opus-4-5-20250520
+    skill: openmind/arch-planner@1.0
+    context:
+      read: [requirements.*]
+      write: [plan.*]
+    max_tokens: 16000
+    temperature: 0.7
+
+  develop:
+    provider: moonshot
+    model: kimi-k2-0711
+    skill: openmind/code-writer@1.0
+    context:
+      read: [plan.*, code.decisions]
+      write: [code.*]
+    depends_on: [planning]
+    max_tokens: 32000
+    temperature: 0.3
+
+  testing:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    skill: openmind/test-gen@1.0
+    context:
+      read: [plan.*, code.*]
+      write: [test.*]
+    depends_on: [develop]
+    max_tokens: 8000
+    temperature: 0.2
+    on_fail:
+      retry_stage: develop
+      max_retries: 3
+      inject_context: test.failures
+
+policies:
+  global:
+    rate_limit: 100/hour
+    audit_log: true
+    cost_limit: $50/run

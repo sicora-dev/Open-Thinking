@@ -1,0 +1,49 @@
+{
+  "name": "openmind",
+  "version": "0.1.0",
+  "description": "Open-source AI pipeline orchestrator for development teams",
+  "type": "module",
+  "bin": {
+    "openmind": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "bun run src/cli/index.ts",
+    "build": "bun build src/cli/index.ts --compile --outfile dist/openmind",
+    "test": "bun test",
+    "lint": "bunx @biomejs/biome check src/",
+    "format": "bunx @biomejs/biome format --write src/",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "yaml": "^2.7.0",
+    "better-sqlite3": "^11.8.0",
+    "vectra": "^0.9.0",
+    "chalk": "^5.4.0",
+    "ora": "^8.1.0",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/openmind"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "orchestrator",
+    "pipeline",
+    "multi-agent",
+    "cli"
+  ]
+}

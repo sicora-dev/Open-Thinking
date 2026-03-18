@@ -1,0 +1,209 @@
+/**
+ * Core type definitions for OpenMind.
+ * All types used across modules are defined here.
+ */
+
+// ─── Pipeline Config ─────────────────────────────────────────
+
+export type PipelineConfig = {
+  name: string;
+  version: string;
+  context: ContextConfig;
+  providers: Record<string, ProviderConfig>;
+  stages: Record<string, StageDefinition>;
+  policies: PoliciesConfig;
+};
+
+export type ContextConfig = {
+  backend: "sqlite" | "postgres";
+  vector: "embedded" | "qdrant" | "pgvector";
+  ttl: string; // e.g., "7d", "24h"
+};
+
+export type ProviderConfig = {
+  type: "openai-compatible" | "ollama" | "custom";
+  base_url: string;
+  api_key?: string;
+  headers?: Record<string, string>;
+};
+
+export type StageDefinition = {
+  provider: string;
+  model: string;
+  skill: string;
+  context: StageContextPermissions;
+  depends_on?: string[];
+  max_tokens?: number;
+  temperature?: number;
+  on_fail?: FailureConfig;
+};
+
+export type StageContextPermissions = {
+  read: string[];  // Glob patterns: ["plan.*", "code.files"]
+  write: string[]; // Glob patterns: ["code.*"]
+};
+
+export type FailureConfig = {
+  retry_stage: string;
+  max_retries: number;
+  inject_context?: string;
+};
+
+export type PoliciesConfig = {
+  global: GlobalPolicies;
+};
+
+export type GlobalPolicies = {
+  rate_limit?: string;   // e.g., "100/hour"
+  audit_log?: boolean;
+  cost_limit?: string;   // e.g., "$50/run"
+};
+
+// ─── Provider / LLM ─────────────────────────────────────────
+
+export type Message = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+};
+
+export type ToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+export type ChatRequest = {
+  model: string;
+  messages: Message[];
+  maxTokens?: number;
+  temperature?: number;
+  systemPrompt?: string;
+  tools?: ToolDefinition[];
+  stream?: boolean;
+};
+
+export type ChatResponse = {
+  id: string;
+  model: string;
+  content: string;
+  usage: TokenUsage;
+  toolCalls?: ToolCall[];
+  finishReason: "stop" | "tool_calls" | "length" | "error";
+};
+
+export type StreamChunk = {
+  type: "content" | "tool_call" | "done" | "error";
+  delta?: string;
+  toolCall?: ToolCall;
+  usage?: TokenUsage;
+  error?: string;
+};
+
+export type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+export type ModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow?: number;
+};
+
+// ─── Provider Interface ──────────────────────────────────────
+
+export type LLMProvider = {
+  name: string;
+  chat(request: ChatRequest): Promise<import("./result").Result<ChatResponse>>;
+  stream(request: ChatRequest): AsyncGenerator<StreamChunk>;
+  listModels(): Promise<import("./result").Result<ModelInfo[]>>;
+  healthCheck(): Promise<import("./result").Result<boolean>>;
+};
+
+// ─── Context Store ───────────────────────────────────────────
+
+export type ContextEntry = {
+  key: string;
+  value: string;
+  createdBy: string;  // Stage name that wrote this
+  createdAt: Date;
+  expiresAt?: Date;
+};
+
+export type ContextStore = {
+  get(key: string): Promise<import("./result").Result<ContextEntry | null>>;
+  set(key: string, value: string, createdBy: string): Promise<import("./result").Result<void>>;
+  delete(key: string): Promise<import("./result").Result<void>>;
+  list(prefix?: string): Promise<import("./result").Result<ContextEntry[]>>;
+  clear(): Promise<import("./result").Result<void>>;
+};
+
+// ─── Skills ──────────────────────────────────────────────────
+
+export type SkillManifest = {
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  context: {
+    reads: string[];
+    writes: string[];
+  };
+  tools?: ToolDefinition[];
+  constraints?: {
+    min_tokens?: number;
+    recommended_models?: string[];
+  };
+};
+
+export type ToolDefinition = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+export type ToolFunction = ToolDefinition & {
+  execute: (args: Record<string, unknown>) => Promise<import("./result").Result<unknown>>;
+};
+
+// ─── Stage Execution ─────────────────────────────────────────
+
+export type StageStatus = "pending" | "running" | "success" | "failed" | "skipped";
+
+export type StageResult = {
+  stageName: string;
+  status: StageStatus;
+  output?: string;
+  usage?: TokenUsage;
+  cost?: number;
+  durationMs: number;
+  error?: string;
+  contextKeysWritten: string[];
+};
+
+export type PipelineRunResult = {
+  pipelineName: string;
+  runId: string;
+  status: "success" | "failed" | "partial";
+  stages: StageResult[];
+  totalDurationMs: number;
+  totalCost: number;
+  totalTokens: TokenUsage;
+};
+
+// ─── Events ──────────────────────────────────────────────────
+
+export type PipelineEvent =
+  | { type: "pipeline:start"; pipelineName: string; runId: string }
+  | { type: "pipeline:complete"; result: PipelineRunResult }
+  | { type: "stage:start"; stageName: string; model: string }
+  | { type: "stage:progress"; stageName: string; chunk: StreamChunk }
+  | { type: "stage:complete"; result: StageResult }
+  | { type: "stage:error"; stageName: string; error: string }
+  | { type: "context:read"; stageName: string; key: string }
+  | { type: "context:write"; stageName: string; key: string }
+  | { type: "policy:violation"; stageName: string; rule: string; detail: string };
