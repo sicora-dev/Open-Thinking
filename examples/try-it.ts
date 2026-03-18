@@ -2,13 +2,13 @@
  * Quick demo: parse a pipeline YAML and create a context store.
  * Run with: bun run examples/try-it.ts
  */
-import { parsePipelineFile } from "../src/pipeline/parser";
+import { parsePipeline } from "../src/pipeline/parser";
 import { createContextStore } from "../src/context/store";
 import { createProviderFromConfig } from "../src/providers";
 
 // 1. Parse a pipeline file
 const pipelinePath = new URL("./demo-pipeline.yaml", import.meta.url).pathname;
-const parseResult = await parsePipelineFile(pipelinePath);
+const parseResult = await parsePipeline(pipelinePath);
 
 if (!parseResult.ok) {
   console.error("❌ Parse error:", parseResult.error.message);
