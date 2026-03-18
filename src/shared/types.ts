@@ -39,7 +39,7 @@ export type StageDefinition = {
 };
 
 export type StageContextPermissions = {
-  read: string[];  // Glob patterns: ["plan.*", "code.files"]
+  read: string[]; // Glob patterns: ["plan.*", "code.files"]
   write: string[]; // Glob patterns: ["code.*"]
 };
 
@@ -54,9 +54,9 @@ export type PoliciesConfig = {
 };
 
 export type GlobalPolicies = {
-  rate_limit?: string;   // e.g., "100/hour"
+  rate_limit?: string; // e.g., "100/hour"
   audit_log?: boolean;
-  cost_limit?: string;   // e.g., "$50/run"
+  cost_limit?: string; // e.g., "$50/run"
 };
 
 // ─── Provider / LLM ─────────────────────────────────────────
@@ -129,7 +129,7 @@ export type LLMProvider = {
 export type ContextEntry = {
   key: string;
   value: string;
-  createdBy: string;  // Stage name that wrote this
+  createdBy: string; // Stage name that wrote this
   createdAt: Date;
   expiresAt?: Date;
 };

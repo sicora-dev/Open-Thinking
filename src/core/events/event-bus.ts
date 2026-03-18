@@ -15,7 +15,7 @@ export const createEventBus = () => {
     /** Subscribe to a specific event type */
     on(type: PipelineEvent["type"], handler: EventHandler): () => void {
       if (!handlers.has(type)) handlers.set(type, new Set());
-      handlers.get(type)!.add(handler);
+      handlers.get(type)?.add(handler);
       return () => handlers.get(type)?.delete(handler);
     },
 

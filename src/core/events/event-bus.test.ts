@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
-import { createEventBus } from "./event-bus";
 import type { PipelineEvent } from "../../shared/types";
+import { createEventBus } from "./event-bus";
 
 describe("EventBus", () => {
   it("emits events to type-specific handlers", () => {
@@ -18,7 +18,10 @@ describe("EventBus", () => {
     const handler = mock(() => {});
 
     bus.on("stage:start", handler);
-    bus.emit({ type: "stage:complete", result: { stageName: "x", status: "success", durationMs: 100, contextKeysWritten: [] } });
+    bus.emit({
+      type: "stage:complete",
+      result: { stageName: "x", status: "success", durationMs: 100, contextKeysWritten: [] },
+    });
 
     expect(handler).toHaveBeenCalledTimes(0);
   });

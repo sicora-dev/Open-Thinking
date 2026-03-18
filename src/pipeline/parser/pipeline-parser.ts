@@ -5,8 +5,8 @@
 
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
-import { type Result, ok, err, tryCatchAsync } from "../../shared/result";
 import { PipelineError } from "../../shared/errors";
+import { type Result, err, ok, tryCatchAsync } from "../../shared/result";
 import type { PipelineConfig } from "../../shared/types";
 
 /** Interpolate ${ENV_VAR} references in strings */
@@ -14,11 +14,9 @@ const interpolateEnvVars = (value: string): string =>
   value.replace(/\$\{([^}]+)\}/g, (_, varName: string) => {
     const envValue = typeof Bun !== "undefined" ? Bun.env[varName] : process.env[varName];
     if (!envValue) {
-      throw new PipelineError(
-        `Environment variable "${varName}" is not set`,
-        "PARSE_ERROR",
-        { variable: varName },
-      );
+      throw new PipelineError(`Environment variable "${varName}" is not set`, "PARSE_ERROR", {
+        variable: varName,
+      });
     }
     return envValue;
   });
@@ -74,11 +72,9 @@ const validateConfig = (config: unknown): Result<PipelineConfig, PipelineError> 
 
     if (!stage.model || typeof stage.model !== "string") {
       return err(
-        new PipelineError(
-          `Stage "${stageName}" is missing 'model' field`,
-          "VALIDATION_ERROR",
-          { stageName },
-        ),
+        new PipelineError(`Stage "${stageName}" is missing 'model' field`, "VALIDATION_ERROR", {
+          stageName,
+        }),
       );
     }
 
@@ -157,11 +153,10 @@ export const parsePipeline = async (
   const fileResult = await tryCatchAsync(() => readFile(filePath, "utf-8"));
   if (!fileResult.ok) {
     return err(
-      new PipelineError(
-        `Cannot read pipeline file: ${filePath}`,
-        "PARSE_ERROR",
-        { path: filePath, cause: fileResult.error.message },
-      ),
+      new PipelineError(`Cannot read pipeline file: ${filePath}`, "PARSE_ERROR", {
+        path: filePath,
+        cause: fileResult.error.message,
+      }),
     );
   }
 
@@ -219,7 +214,10 @@ export const parsePipelineFromString = (
     } catch (e) {
       if (e instanceof PipelineError) return err(e);
       return err(
-        new PipelineError(`Env interpolation failed: ${e instanceof Error ? e.message : String(e)}`, "PARSE_ERROR"),
+        new PipelineError(
+          `Env interpolation failed: ${e instanceof Error ? e.message : String(e)}`,
+          "PARSE_ERROR",
+        ),
       );
     }
   }

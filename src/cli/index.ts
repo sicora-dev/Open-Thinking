@@ -60,9 +60,7 @@ program
   });
 
 // ─── provider ────────────────────────────────────────────────
-const provider = program
-  .command("provider")
-  .description("Manage LLM providers");
+const provider = program.command("provider").description("Manage LLM providers");
 
 provider
   .command("add")
@@ -94,9 +92,7 @@ provider
   });
 
 // ─── skill ───────────────────────────────────────────────────
-const skill = program
-  .command("skill")
-  .description("Manage skills");
+const skill = program.command("skill").description("Manage skills");
 
 skill
   .command("install")
@@ -125,9 +121,7 @@ skill
   });
 
 // ─── context ─────────────────────────────────────────────────
-const context = program
-  .command("context")
-  .description("Manage shared context store");
+const context = program.command("context").description("Manage shared context store");
 
 context
   .command("inspect")

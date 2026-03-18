@@ -25,8 +25,7 @@ export const setLogLevel = (level: LogLevel): void => {
   currentLevel = level;
 };
 
-const shouldLog = (level: LogLevel): boolean =>
-  LOG_LEVELS[level] >= LOG_LEVELS[currentLevel];
+const shouldLog = (level: LogLevel): boolean => LOG_LEVELS[level] >= LOG_LEVELS[currentLevel];
 
 const isDev = (): boolean =>
   (typeof Bun !== "undefined" ? Bun.env.NODE_ENV : process.env.NODE_ENV) !== "production";
