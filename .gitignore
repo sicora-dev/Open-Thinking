@@ -3,6 +3,7 @@ dist/
 .openmind/
 *.db
 *.db-journal
+.claude/
 
 # Env files with secrets
 .env

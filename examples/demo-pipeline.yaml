@@ -1,0 +1,37 @@
+name: demo-pipeline
+version: "0.1.0"
+
+context:
+  backend: sqlite
+  vector: embedded
+  ttl: "7d"
+
+providers:
+  openai:
+    type: openai-compatible
+    base_url: https://api.openai.com/v1
+    api_key: sk-demo-key
+  local:
+    type: ollama
+    base_url: http://localhost:11434
+
+stages:
+  planner:
+    provider: openai
+    model: gpt-4
+    skill: core/arch-planner@1.0
+    context:
+      read: []
+      write: ["plan.*"]
+  coder:
+    provider: local
+    model: codellama
+    skill: core/code-writer@1.0
+    context:
+      read: ["plan.*"]
+      write: ["code.*"]
+    depends_on: [planner]
+
+policies:
+  global:
+    audit_log: true
