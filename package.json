@@ -4,7 +4,7 @@
   "description": "Open-source AI pipeline orchestrator for development teams",
   "type": "module",
   "bin": {
-    "openmind": "./dist/cli.js"
+    "openmind": "./src/cli/index.ts"
   },
   "scripts": {
     "dev": "bun run src/cli/index.ts",
