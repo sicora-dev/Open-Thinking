@@ -102,6 +102,8 @@ export type ChatRequest = {
   systemPrompt?: string;
   tools?: ToolDefinition[];
   stream?: boolean;
+  /** Abort signal for cancellation support. */
+  signal?: AbortSignal;
 };
 
 export type ChatResponse = {
@@ -192,7 +194,7 @@ export type ToolFunction = ToolDefinition & {
 
 // ─── Stage Execution ─────────────────────────────────────────
 
-export type StageStatus = "pending" | "running" | "success" | "failed" | "skipped";
+export type StageStatus = "pending" | "running" | "success" | "failed" | "skipped" | "cancelled";
 
 export type StageResult = {
   stageName: string;

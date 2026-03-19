@@ -134,11 +134,15 @@ export function createOpenAICompatibleAdapter(config: OpenAICompatibleConfig): L
     log.debug("chat request", { url, model: request.model });
 
     try {
+      const signals = [AbortSignal.timeout(timeoutMs)];
+      if (request.signal) signals.push(request.signal);
+      const combinedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+
       const response = await fetch(url, {
         method: "POST",
         headers: baseHeaders,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: combinedSignal,
       });
 
       if (!response.ok) {
@@ -154,6 +158,9 @@ export function createOpenAICompatibleAdapter(config: OpenAICompatibleConfig): L
       const data = (await response.json()) as Record<string, unknown>;
       return ok(parseResponse(data));
     } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") {
+        return err(new ProviderError("Request aborted", "TIMEOUT", 499, name));
+      }
       if (e instanceof Error && e.name === "TimeoutError") {
         return err(new ProviderError("Request timed out", "TIMEOUT", 408, name));
       }

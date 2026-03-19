@@ -96,7 +96,11 @@ async function autoDetectPipeline(workingDir: string): Promise<Partial<ReplState
 /**
  * Execute a natural language prompt through the loaded pipeline.
  */
-async function executePipelinePrompt(input: string, state: ReplState): Promise<void> {
+async function executePipelinePrompt(
+  input: string,
+  state: ReplState,
+  abortController?: AbortController,
+): Promise<void> {
   if (!state.pipelineConfig) {
     console.log(
       `\n  ${c("yellow", "No pipeline loaded.")} Use ${c("dim", "/pipeline <path>")} to load one.\n`,
@@ -198,12 +202,17 @@ async function executePipelinePrompt(input: string, state: ReplState): Promise<v
     policyEngine: policyResult.value,
     eventBus,
     skillsDir,
+    signal: abortController?.signal,
   });
 
   contextStore.close();
 
   if (!result.ok) {
-    console.log(`\n  ${c("red", "Pipeline failed:")} ${result.error.message}\n`);
+    if (abortController?.signal.aborted) {
+      console.log(`\n  ${c("yellow", "Pipeline cancelled by user.")}\n`);
+    } else {
+      console.log(`\n  ${c("red", "Pipeline failed:")} ${result.error.message}\n`);
+    }
     return;
   }
 
@@ -277,6 +286,9 @@ export async function startRepl(workingDir?: string): Promise<void> {
 
   rl.prompt();
 
+  // Cancellation: active controller is set during pipeline execution
+  let activeAbortController: AbortController | null = null;
+
   // Queue lines to handle async commands sequentially
   const lineQueue: string[] = [];
   let processing = false;
@@ -311,7 +323,9 @@ export async function startRepl(workingDir?: string): Promise<void> {
           return;
         }
       } else {
-        await executePipelinePrompt(trimmed, state);
+        activeAbortController = new AbortController();
+        await executePipelinePrompt(trimmed, state, activeAbortController);
+        activeAbortController = null;
       }
 
       rl.prompt();
@@ -334,9 +348,14 @@ export async function startRepl(workingDir?: string): Promise<void> {
     process.exit(0);
   });
 
-  // Handle Ctrl+C gracefully
+  // Handle Ctrl+C: cancel running pipeline or show hint
   rl.on("SIGINT", () => {
-    console.log(`\n  ${c("dim", "Use /exit or Ctrl+D to quit.")}`);
-    rl.prompt();
+    if (activeAbortController) {
+      activeAbortController.abort();
+      console.log(`\n  ${c("yellow", "⚠")} ${c("bold", "Cancelling pipeline...")} ${c("dim", "waiting for current operation to finish")}`);
+    } else {
+      console.log(`\n  ${c("dim", "Use /exit or Ctrl+D to quit.")}`);
+      rl.prompt();
+    }
   });
 }

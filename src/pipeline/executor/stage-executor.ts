@@ -31,6 +31,8 @@ export type ExecutorDeps = {
   eventBus: EventBus;
   /** Base directory for resolving skill paths. Defaults to cwd. */
   skillsDir?: string;
+  /** Abort signal for cancellation support. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -177,6 +179,16 @@ async function executeStage(
   const start = Date.now();
   const { providers, contextStore, policyEngine, eventBus } = deps;
 
+  // Check for cancellation before starting
+  if (deps.signal?.aborted) {
+    return {
+      stageName,
+      status: "skipped",
+      durationMs: 0,
+      contextKeysWritten: [],
+    };
+  }
+
   const provider = providers[stageDef.provider];
   if (!provider) {
     return {
@@ -261,6 +273,7 @@ async function executeStage(
     maxIterations,
     eventBus,
     stageName,
+    signal: deps.signal,
   });
   if (!loopResult.ok) {
     const error = loopResult.error.message;
@@ -381,12 +394,12 @@ export async function executePipeline(deps: ExecutorDeps): Promise<Result<Pipeli
   let pipelineFailed = false;
 
   for (const layer of layers) {
-    if (pipelineFailed) {
+    if (pipelineFailed || deps.signal?.aborted) {
       // Skip remaining stages
       for (const name of layer) {
         stageResults.push({
           stageName: name,
-          status: "skipped",
+          status: deps.signal?.aborted ? "cancelled" : "skipped",
           durationMs: 0,
           contextKeysWritten: [],
         });
@@ -428,11 +441,12 @@ export async function executePipeline(deps: ExecutorDeps): Promise<Result<Pipeli
 
   const allSuccess = stageResults.every((r) => r.status === "success");
   const anySuccess = stageResults.some((r) => r.status === "success");
+  const wasCancelled = deps.signal?.aborted ?? false;
 
   const result: PipelineRunResult = {
     pipelineName: config.name,
     runId,
-    status: allSuccess ? "success" : anySuccess ? "partial" : "failed",
+    status: wasCancelled ? "failed" : allSuccess ? "success" : anySuccess ? "partial" : "failed",
     stages: stageResults,
     totalDurationMs: Date.now() - start,
     totalCost,

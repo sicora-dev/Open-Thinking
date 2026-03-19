@@ -18,6 +18,8 @@ export type AgentLoopConfig = {
   maxIterations: number;
   eventBus: EventBus;
   stageName: string;
+  /** Abort signal for cancellation. */
+  signal?: AbortSignal;
 };
 
 export type AgentLoopResult = {
@@ -44,7 +46,7 @@ const MIN_WRITE_CALLS_BEFORE_ACCEPT_STOP = 5;
 const WRITE_TOOLS = new Set(["write_file", "run_command"]);
 
 export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<AgentLoopResult>> {
-  const { provider, request, toolRegistry, maxIterations, eventBus, stageName } = config;
+  const { provider, request, toolRegistry, maxIterations, eventBus, stageName, signal } = config;
 
   const messages: Message[] = [...request.messages];
   const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -54,11 +56,17 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   let continuations = 0;
 
   for (let i = 0; i < maxIterations; i++) {
+    // Check for cancellation before each iteration
+    if (signal?.aborted) {
+      return err(new Error("Pipeline execution was cancelled"));
+    }
+
     iterations++;
 
     const chatResult = await provider.chat({
       ...request,
       messages,
+      signal,
     });
 
     if (!chatResult.ok) {
@@ -110,6 +118,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
     // Execute each tool call
     for (const toolCall of response.toolCalls) {
+      // Check for cancellation before each tool call
+      if (signal?.aborted) {
+        return err(new Error("Pipeline execution was cancelled"));
+      }
+
       const toolName = toolCall.function.name;
       if (WRITE_TOOLS.has(toolName)) {
         writeToolCalls++;
