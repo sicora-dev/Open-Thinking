@@ -34,6 +34,11 @@ export type ExecutorDeps = {
   skillsDir?: string;
   /** Abort signal for cancellation support. */
   signal?: AbortSignal;
+  /**
+   * Called when a stage hits the output token limit after auto-retries.
+   * Returns true to continue, false to stop.
+   */
+  onTokenLimit?: (stageName: string, summary: import("./agent-loop").WorkSummary) => Promise<boolean>;
 };
 
 /**
@@ -284,7 +289,7 @@ async function executeStage(
       },
     ],
     systemPrompt,
-    maxTokens: stageDef.max_tokens,
+    maxTokens: stageDef.max_tokens ?? 16384,
     temperature: stageDef.temperature,
     tools: toolRegistry.definitions(),
   };
@@ -299,6 +304,9 @@ async function executeStage(
     eventBus,
     stageName,
     signal: deps.signal,
+    onTokenLimit: deps.onTokenLimit
+      ? (summary) => deps.onTokenLimit!(stageName, summary)
+      : undefined,
   });
   if (!loopResult.ok) {
     const error = loopResult.error.message;
@@ -360,6 +368,8 @@ async function executeStage(
     cost,
     durationMs: Date.now() - start,
     contextKeysWritten,
+    stopReason: agentResult.stopReason,
+    workSummary: agentResult.workSummary,
   };
 
   eventBus.emit({ type: "stage:complete", result });

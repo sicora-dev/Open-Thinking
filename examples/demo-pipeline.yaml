@@ -23,7 +23,7 @@ stages:
       write: ["planner.*"]
   coder:
     provider: ollama
-    model: qwen3.5:9b
+    model: kimi-k2.5:cloud
     skill: core/code-writer@1.0
     allowed_tools: [read_file, write_file, list_files, run_command, search_files]
     context:

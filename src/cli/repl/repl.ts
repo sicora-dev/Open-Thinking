@@ -180,12 +180,41 @@ async function executePipelinePrompt(
       console.log(`    ${c("dim", "←")} ${icon} ${c("dim", `${e.durationMs}ms`)}`);
     }
   });
+  eventBus.on("stage:warning", (e) => {
+    if (e.type === "stage:warning") {
+      console.log(`    ${c("yellow", "⚠")} ${c("yellow", e.message)}`);
+    }
+  });
   eventBus.on("stage:complete", (e) => {
     if (e.type === "stage:complete") {
-      const { stageName, status, durationMs, usage } = e.result;
+      const { stageName, status, durationMs, usage, stopReason, workSummary } = e.result;
       const icon = status === "success" ? c("green", "✓") : c("red", "✗");
       const tokens = usage ? `${usage.totalTokens} tokens` : "";
-      console.log(`  ${icon} ${stageName} ${c("dim", `${durationMs}ms ${tokens}`)}`);
+
+      // Show stop reason if noteworthy
+      let reasonText = "";
+      if (stopReason === "token_limit") {
+        reasonText = c("yellow", " [stopped: token limit]");
+      } else if (stopReason === "max_iterations") {
+        reasonText = c("yellow", " [stopped: max iterations]");
+      }
+
+      // Show work summary
+      let summaryText = "";
+      if (workSummary) {
+        const parts: string[] = [];
+        if (workSummary.filesWritten.length > 0) {
+          parts.push(`${workSummary.filesWritten.length} files`);
+        }
+        if (workSummary.commandsRun.length > 0) {
+          parts.push(`${workSummary.commandsRun.length} commands`);
+        }
+        if (parts.length > 0) {
+          summaryText = c("dim", ` (${parts.join(", ")})`);
+        }
+      }
+
+      console.log(`  ${icon} ${stageName} ${c("dim", `${durationMs}ms ${tokens}`)}${summaryText}${reasonText}`);
     }
   });
   eventBus.on("stage:error", (e) => {
@@ -193,6 +222,39 @@ async function executePipelinePrompt(
       console.log(`  ${c("red", "✗")} ${e.stageName}: ${e.error}`);
     }
   });
+
+  // Token limit callback: ask the user if they want to continue
+  async function onTokenLimit(
+    stgName: string,
+    summary: { filesWritten: string[]; commandsRun: string[] },
+  ): Promise<boolean> {
+    console.log();
+    console.log(`  ${c("yellow", "⚠")} ${c("bold", stgName)} hit the output token limit.`);
+    if (summary.filesWritten.length > 0) {
+      console.log(`    Files written so far: ${c("dim", summary.filesWritten.join(", "))}`);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      process.stdout.write(`  ${c("cyan", "Continue execution?")} ${c("dim", "(y/n) ")}`);
+      const onData = (data: Buffer) => {
+        const key = data.toString().trim().toLowerCase();
+        if (key === "y" || key === "yes" || key === "") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log();
+          resolve(true);
+        } else if (key === "n" || key === "no") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log();
+          resolve(false);
+        }
+      };
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      process.stdin.on("data", onData);
+    });
+  }
 
   // Execute pipeline
   const result = await executePipeline({
@@ -203,6 +265,7 @@ async function executePipelinePrompt(
     eventBus,
     skillsDir,
     signal: abortController?.signal,
+    onTokenLimit,
   });
 
   contextStore.close();

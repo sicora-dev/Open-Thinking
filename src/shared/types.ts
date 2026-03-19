@@ -217,6 +217,10 @@ export type StageResult = {
   durationMs: number;
   error?: string;
   contextKeysWritten: string[];
+  /** Why the agent loop stopped (if applicable). */
+  stopReason?: "done" | "cancelled" | "max_iterations" | "token_limit" | "error";
+  /** Files written and commands run during the stage. */
+  workSummary?: { filesWritten: string[]; commandsRun: string[] };
 };
 
 export type PipelineRunResult = {
@@ -238,6 +242,7 @@ export type PipelineEvent =
   | { type: "stage:progress"; stageName: string; chunk: StreamChunk }
   | { type: "stage:complete"; result: StageResult }
   | { type: "stage:error"; stageName: string; error: string }
+  | { type: "stage:warning"; stageName: string; message: string }
   | { type: "context:read"; stageName: string; key: string }
   | { type: "context:write"; stageName: string; key: string }
   | { type: "policy:violation"; stageName: string; rule: string; detail: string }

@@ -2,15 +2,22 @@
  * Agent loop: iteratively calls an LLM, executes tool calls, and feeds
  * results back until the model stops requesting tools.
  *
- * When the model stops, the loop builds a summary of what was done
- * (files written, commands run) and asks the model if the task is complete.
- * If the model says no, it continues. This lets the model itself decide
- * when it's done — no arbitrary thresholds.
+ * Stop handling:
+ * - "tool_calls": model wants to use tools → execute and continue
+ * - "length": model hit token limit → ask user if they want to continue
+ * - "stop": model decided to stop → check if work is complete
+ *
+ * When the model stops voluntarily, the loop shows what was done and asks
+ * the model if the task is complete. If the model responds with text but
+ * no tool calls (common with small models), it gets one more chance to
+ * actually use tools before the check counts.
  */
 import type { EventBus } from "../../core/events/event-bus";
 import { type Result, err, ok } from "../../shared/result";
 import type { ChatRequest, LLMProvider, Message, TokenUsage } from "../../shared/types";
 import type { ToolRegistry } from "../../tools";
+
+export type StopReason = "done" | "cancelled" | "max_iterations" | "token_limit" | "error";
 
 export type AgentLoopConfig = {
   provider: LLMProvider;
@@ -21,6 +28,17 @@ export type AgentLoopConfig = {
   stageName: string;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
+  /**
+   * Called when the model hits the token limit (finishReason: "length").
+   * Returns true to continue execution, false to stop.
+   * If not provided, the loop stops on token limit.
+   */
+  onTokenLimit?: (summary: WorkSummary) => Promise<boolean>;
+};
+
+export type WorkSummary = {
+  filesWritten: string[];
+  commandsRun: string[];
 };
 
 export type AgentLoopResult = {
@@ -32,6 +50,10 @@ export type AgentLoopResult = {
   totalUsage: TokenUsage;
   /** Number of LLM calls made. */
   iterations: number;
+  /** Why the loop stopped. */
+  stopReason: StopReason;
+  /** What the agent did during this run. */
+  workSummary: WorkSummary;
 };
 
 /**
@@ -39,6 +61,9 @@ export type AgentLoopResult = {
  * a stop. Prevents infinite self-check loops.
  */
 const MAX_COMPLETION_CHECKS = 2;
+
+/** Max consecutive "length" auto-continues before requiring user input. */
+const MAX_LENGTH_CONTINUES = 3;
 
 export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<AgentLoopResult>> {
   const { provider, request, toolRegistry, maxIterations, eventBus, stageName, signal } = config;
@@ -48,14 +73,16 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   let finalContent = "";
   let iterations = 0;
   let completionChecks = 0;
+  let lengthContinues = 0;
+  let stopReason: StopReason = "done";
 
-  // Track what the model has done for the completion check
+  // Track what the model has done
   const filesWritten: string[] = [];
   const commandsRun: string[] = [];
 
   for (let i = 0; i < maxIterations; i++) {
-    // Check for cancellation before each iteration
     if (signal?.aborted) {
+      stopReason = "cancelled";
       return err(new Error("Pipeline execution was cancelled"));
     }
 
@@ -79,29 +106,80 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
     totalUsage.totalTokens += response.usage.totalTokens;
 
     // Append assistant message
-    const assistantMsg: Message = {
+    messages.push({
       role: "assistant",
       content: response.content,
       tool_calls: response.toolCalls,
-    };
-    messages.push(assistantMsg);
+    });
 
-    // Capture latest content
     if (response.content) {
       finalContent = response.content;
     }
 
-    // If no tool calls, the model wants to stop
+    // ── Handle "length" — model hit token limit ──────────────
+    if (response.finishReason === "length") {
+      lengthContinues++;
+
+      eventBus.emit({
+        type: "stage:warning",
+        stageName,
+        message: `Output token limit reached (hit ${lengthContinues} time${lengthContinues > 1 ? "s" : ""})`,
+      });
+
+      // Auto-continue a few times (the model was cut off, not done)
+      if (lengthContinues <= MAX_LENGTH_CONTINUES && i < maxIterations - 1) {
+        messages.push({
+          role: "user",
+          content: "Your response was cut off because you hit the output token limit. Continue exactly where you left off.",
+        });
+        continue;
+      }
+
+      // Too many length hits — ask user if they want to continue
+      if (config.onTokenLimit) {
+        const summary = { filesWritten: [...filesWritten], commandsRun: [...commandsRun] };
+        const shouldContinue = await config.onTokenLimit(summary);
+        if (shouldContinue) {
+          lengthContinues = 0; // Reset counter
+          messages.push({
+            role: "user",
+            content: "The user has confirmed you should continue. Pick up where you left off and keep working.",
+          });
+          continue;
+        }
+      }
+
+      stopReason = "token_limit";
+      break;
+    }
+
+    // ── Handle "stop" or no tool calls — model decided to stop ──
     if (response.finishReason !== "tool_calls" || !response.toolCalls?.length) {
-      // If the model has done work and we haven't asked too many times,
-      // show it what it did and ask if it's really done
+      // Reset length counter since this was a voluntary stop
+      lengthContinues = 0;
+
       if (
         filesWritten.length + commandsRun.length > 0 &&
         completionChecks < MAX_COMPLETION_CHECKS &&
         i < maxIterations - 1
       ) {
+        // Check if the model responded with text but no tools (common with
+        // small models that say "I'll continue" without actually calling tools).
+        // Don't count this as a completion check — give it a direct nudge.
+        const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+        if (!hasToolCalls && completionChecks > 0) {
+          // Already asked once, model responded with text only — nudge harder
+          messages.push({
+            role: "user",
+            content:
+              "You said you would continue but did not use any tools. " +
+              "You MUST call write_file, run_command, or other tools now. Do not describe what you will do — do it.",
+          });
+          continue;
+        }
+
         completionChecks++;
-        const summary = buildWorkSummary(filesWritten, commandsRun);
+        const summary = buildWorkSummaryText(filesWritten, commandsRun);
         messages.push({
           role: "user",
           content:
@@ -112,14 +190,18 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         });
         continue;
       }
-      // Accept the stop
+
+      stopReason = "done";
       break;
     }
 
-    // Execute each tool call
+    // ── Execute tool calls ───────────────────────────────────
+    // Reset length counter since the model is actively working
+    lengthContinues = 0;
+
     for (const toolCall of response.toolCalls) {
-      // Check for cancellation before each tool call
       if (signal?.aborted) {
+        stopReason = "cancelled";
         return err(new Error("Pipeline execution was cancelled"));
       }
 
@@ -131,7 +213,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         // If args aren't valid JSON, pass empty
       }
 
-      // Track writes and commands for completion check
+      // Track work done
       if (toolName === "write_file" && typeof args.path === "string") {
         filesWritten.push(args.path);
       } else if (toolName === "run_command" && typeof args.command === "string") {
@@ -163,7 +245,6 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         success: toolResult.ok,
       });
 
-      // Append tool result message
       messages.push({
         role: "tool",
         content: resultContent,
@@ -172,13 +253,19 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
     }
   }
 
-  return ok({ finalContent, messages, totalUsage, iterations });
+  // If we exited the for loop naturally, it's max_iterations
+  if (iterations >= maxIterations && stopReason === "done") {
+    stopReason = "max_iterations";
+  }
+
+  const workSummary = { filesWritten, commandsRun };
+  return ok({ finalContent, messages, totalUsage, iterations, stopReason, workSummary });
 }
 
 /**
  * Build a human-readable summary of what the agent has done so far.
  */
-function buildWorkSummary(filesWritten: string[], commandsRun: string[]): string {
+function buildWorkSummaryText(filesWritten: string[], commandsRun: string[]): string {
   const lines: string[] = [];
 
   if (filesWritten.length > 0) {
@@ -193,6 +280,10 @@ function buildWorkSummary(filesWritten: string[], commandsRun: string[]): string
     for (const c of commandsRun) {
       lines.push(`  - ${c}`);
     }
+  }
+
+  if (lines.length === 0) {
+    lines.push("(no files written, no commands run)");
   }
 
   return lines.join("\n");
