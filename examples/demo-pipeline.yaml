@@ -17,6 +17,7 @@ stages:
     provider: anthropic
     model: claude-sonnet-4-6
     skill: core/arch-planner@1.0
+    allowed_tools: [read_file, list_files, search_files]
     context:
       read: ["input.*"]
       write: ["planner.*"]
@@ -24,6 +25,7 @@ stages:
     provider: ollama
     model: qwen3.5:9b
     skill: core/code-writer@1.0
+    allowed_tools: [read_file, write_file, list_files, run_command, search_files]
     context:
       read: ["input.*", "planner.*"]
       write: ["coder.*"]

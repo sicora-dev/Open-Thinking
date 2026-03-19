@@ -162,7 +162,7 @@ function loadSkill(skillRef: string, skillsDir: string): LoadedSkill {
         allowedTools = raw.allowed_tools as string[];
       }
     } catch {
-      // If manifest is malformed, fall back to no restrictions
+      // If manifest is malformed, fall back to defaults
     }
   }
 

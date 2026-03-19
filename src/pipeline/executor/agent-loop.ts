@@ -2,9 +2,10 @@
  * Agent loop: iteratively calls an LLM, executes tool calls, and feeds
  * results back until the model stops requesting tools.
  *
- * If the model stops early (few tool calls made), the loop sends a
- * continuation prompt to push the model to finish its work. This helps
- * with smaller models that tend to stop after scaffolding.
+ * When the model stops, the loop builds a summary of what was done
+ * (files written, commands run) and asks the model if the task is complete.
+ * If the model says no, it continues. This lets the model itself decide
+ * when it's done — no arbitrary thresholds.
  */
 import type { EventBus } from "../../core/events/event-bus";
 import { type Result, err, ok } from "../../shared/result";
@@ -33,17 +34,11 @@ export type AgentLoopResult = {
   iterations: number;
 };
 
-/** Max times we'll nudge the model to continue when it stops early. */
-const MAX_CONTINUATIONS = 3;
-
 /**
- * Minimum "write" tool calls (write_file, run_command) before we consider
- * the work substantial enough to accept a stop. Read-only calls (read_file,
- * list_files, search_files) don't count — they're just reconnaissance.
+ * Max times the loop will ask the model "are you done?" before accepting
+ * a stop. Prevents infinite self-check loops.
  */
-const MIN_WRITE_CALLS_BEFORE_ACCEPT_STOP = 5;
-
-const WRITE_TOOLS = new Set(["write_file", "run_command"]);
+const MAX_COMPLETION_CHECKS = 2;
 
 export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<AgentLoopResult>> {
   const { provider, request, toolRegistry, maxIterations, eventBus, stageName, signal } = config;
@@ -52,8 +47,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let finalContent = "";
   let iterations = 0;
-  let writeToolCalls = 0;
-  let continuations = 0;
+  let completionChecks = 0;
+
+  // Track what the model has done for the completion check
+  const filesWritten: string[] = [];
+  const commandsRun: string[] = [];
 
   for (let i = 0; i < maxIterations; i++) {
     // Check for cancellation before each iteration
@@ -93,26 +91,28 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       finalContent = response.content;
     }
 
-    // If no tool calls, check if we should nudge the model to continue
+    // If no tool calls, the model wants to stop
     if (response.finishReason !== "tool_calls" || !response.toolCalls?.length) {
-      // Only nudge if the model has written files/run commands but hasn't done
-      // enough yet. This avoids nudging stages that only read or do simple Q&A.
+      // If the model has done work and we haven't asked too many times,
+      // show it what it did and ask if it's really done
       if (
-        writeToolCalls > 0 &&
-        writeToolCalls < MIN_WRITE_CALLS_BEFORE_ACCEPT_STOP &&
-        continuations < MAX_CONTINUATIONS &&
+        filesWritten.length + commandsRun.length > 0 &&
+        completionChecks < MAX_COMPLETION_CHECKS &&
         i < maxIterations - 1
       ) {
-        continuations++;
+        completionChecks++;
+        const summary = buildWorkSummary(filesWritten, commandsRun);
         messages.push({
           role: "user",
           content:
-            "You stopped but the task is not complete. Review the plan and continue implementing. " +
-            "Use the tools to create all remaining files. Do not summarize — keep writing code.",
+            `You stopped. Here is what you have done so far:\n${summary}\n\n` +
+            "Review your original task and the plan. Is everything complete? " +
+            "If there are remaining files to create or steps to finish, continue working using the tools. " +
+            "If everything is truly done, respond with just the word DONE.",
         });
         continue;
       }
-      // Otherwise, accept the stop
+      // Accept the stop
       break;
     }
 
@@ -124,14 +124,20 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       }
 
       const toolName = toolCall.function.name;
-      if (WRITE_TOOLS.has(toolName)) {
-        writeToolCalls++;
-      }
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
       } catch {
         // If args aren't valid JSON, pass empty
+      }
+
+      // Track writes and commands for completion check
+      if (toolName === "write_file" && typeof args.path === "string") {
+        filesWritten.push(args.path);
+      } else if (toolName === "run_command" && typeof args.command === "string") {
+        commandsRun.push(
+          args.command.length > 60 ? `${args.command.slice(0, 60)}…` : args.command,
+        );
       }
 
       eventBus.emit({
@@ -167,4 +173,27 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   }
 
   return ok({ finalContent, messages, totalUsage, iterations });
+}
+
+/**
+ * Build a human-readable summary of what the agent has done so far.
+ */
+function buildWorkSummary(filesWritten: string[], commandsRun: string[]): string {
+  const lines: string[] = [];
+
+  if (filesWritten.length > 0) {
+    lines.push(`Files written (${filesWritten.length}):`);
+    for (const f of filesWritten) {
+      lines.push(`  - ${f}`);
+    }
+  }
+
+  if (commandsRun.length > 0) {
+    lines.push(`Commands run (${commandsRun.length}):`);
+    for (const c of commandsRun) {
+      lines.push(`  - ${c}`);
+    }
+  }
+
+  return lines.join("\n");
 }
