@@ -18,7 +18,11 @@ export type ToolRegistry = {
   execute(name: string, args: Record<string, unknown>): Promise<Result<string>>;
 };
 
-export function createToolRegistry(workingDir: string): ToolRegistry {
+/**
+ * @param workingDir - Base directory for file operations.
+ * @param allowedTools - If provided, only these tools are registered. Others are excluded.
+ */
+export function createToolRegistry(workingDir: string, allowedTools?: string[]): ToolRegistry {
   const tools = new Map<string, ToolFunction>();
 
   const builtins = [
@@ -29,8 +33,11 @@ export function createToolRegistry(workingDir: string): ToolRegistry {
     createSearchFilesTool(workingDir),
   ];
 
+  const allowed = allowedTools ? new Set(allowedTools) : null;
   for (const tool of builtins) {
-    tools.set(tool.name, tool);
+    if (!allowed || allowed.has(tool.name)) {
+      tools.set(tool.name, tool);
+    }
   }
 
   function definitions(): ToolDefinition[] {

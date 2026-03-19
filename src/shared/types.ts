@@ -55,6 +55,12 @@ export type StageDefinition = {
   temperature?: number;
   /** Max agent loop iterations (tool call rounds). Default: 50. */
   max_iterations?: number;
+  /**
+   * Restrict which tools the stage can use.
+   * If omitted, all tools are available.
+   * Example: ["read_file", "list_files", "search_files"] for read-only stages.
+   */
+  allowed_tools?: string[];
   on_fail?: FailureConfig;
 };
 
@@ -175,6 +181,12 @@ export type SkillManifest = {
     reads: string[];
     writes: string[];
   };
+  /**
+   * Tools this skill can use. Defines the skill's default permissions.
+   * Pipeline YAML `allowed_tools` overrides this if specified.
+   * If omitted, the stage has access to all tools.
+   */
+  allowed_tools?: string[];
   tools?: ToolDefinition[];
   constraints?: {
     min_tokens?: number;

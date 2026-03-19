@@ -5,6 +5,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { EventBus } from "../../core/events/event-bus";
 import type { PolicyEngine } from "../../policies/engine";
 import { ProviderError } from "../../shared/errors";
@@ -125,24 +126,47 @@ function formatContextForPrompt(context: Record<string, string>): string {
   return `\n\n--- Context ---\n${lines.join("\n\n")}\n--- End Context ---`;
 }
 
+type LoadedSkill = {
+  prompt: string | null;
+  allowedTools: string[] | null;
+};
+
 /**
- * Load a skill's prompt.md file. Skill references look like "core/arch-planner@1.0".
- * We resolve to: <skillsDir>/<namespace>/<name>/prompt.md
+ * Load a skill's prompt.md and skill.yaml. Skill references look like "core/arch-planner@1.0".
+ * We resolve to: <skillsDir>/<namespace>/<name>/
+ *
+ * The skill.yaml defines allowed_tools — the default tool permissions for this skill type.
+ * A planner skill only gets read tools, a coder gets everything, etc.
  */
-function loadSkillPrompt(skillRef: string, skillsDir: string): string | null {
+function loadSkill(skillRef: string, skillsDir: string): LoadedSkill {
   // Parse "namespace/name@version" or just "name"
   const withoutVersion = skillRef.split("@")[0] ?? skillRef;
   const parts = withoutVersion.split("/");
   const first = parts[0] ?? withoutVersion;
-  const skillPath =
+  const skillDir =
     parts.length >= 2
-      ? join(skillsDir, first, parts.slice(1).join("/"), "prompt.md")
-      : join(skillsDir, first, "prompt.md");
+      ? join(skillsDir, first, parts.slice(1).join("/"))
+      : join(skillsDir, first);
 
-  if (existsSync(skillPath)) {
-    return readFileSync(skillPath, "utf-8").trim();
+  // Load prompt.md
+  const promptPath = join(skillDir, "prompt.md");
+  const prompt = existsSync(promptPath) ? readFileSync(promptPath, "utf-8").trim() : null;
+
+  // Load skill.yaml manifest for tool permissions
+  let allowedTools: string[] | null = null;
+  const manifestPath = join(skillDir, "skill.yaml");
+  if (existsSync(manifestPath)) {
+    try {
+      const raw = parseYaml(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
+      if (Array.isArray(raw.allowed_tools)) {
+        allowedTools = raw.allowed_tools as string[];
+      }
+    } catch {
+      // If manifest is malformed, fall back to no restrictions
+    }
   }
-  return null;
+
+  return { prompt, allowedTools };
 }
 
 /**
@@ -239,15 +263,16 @@ async function executeStage(
 
   const contextBlock = formatContextForPrompt(contextResult.value);
 
-  // Load skill prompt if available
+  // Load skill prompt + manifest (tool permissions)
   const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
-  const skillPrompt = loadSkillPrompt(stageDef.skill, skillsDir);
+  const skill = loadSkill(stageDef.skill, skillsDir);
 
-  // Build tool registry for this stage
-  const toolRegistry = createToolRegistry(process.cwd());
+  // Resolve tool permissions: stage YAML overrides > skill manifest > all tools
+  const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
+  const toolRegistry = createToolRegistry(process.cwd(), allowedTools);
 
   // Build chat request
-  const systemPrompt = skillPrompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
+  const systemPrompt = skill.prompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
   const request: ChatRequest = {
     model: stageDef.model,
     messages: [

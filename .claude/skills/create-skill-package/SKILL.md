@@ -38,13 +38,22 @@ context:
   reads: [plan.*]              # Suggested read permissions
   writes: [plan.architecture]  # Suggested write permissions
 
-# Tool definitions (if the skill provides tools)
+# Tool permissions — enforced at the registry level.
+# If a tool isn't listed, the LLM cannot call it, period.
+# The skill author decides what tools this skill needs.
+# Available: read_file, write_file, list_files, run_command, search_files
+# If omitted, all tools are available.
+allowed_tools:
+  - read_file
+  - list_files
+  - search_files
+
+# Optional: custom tool definitions (if the skill provides additional tools)
 tools:
-  - name: write_file
-    description: Write a file to the workspace
+  - name: custom_tool
+    description: A custom tool for this skill
     parameters:
-      path: { type: string, required: true }
-      content: { type: string, required: true }
+      param: { type: string, required: true }
 
 # Constraints
 constraints:
@@ -53,6 +62,11 @@ constraints:
     - claude-opus-4-5-*
     - gpt-4o
 ```
+
+Users can override `allowed_tools` per-stage in their pipeline YAML if they want
+different behavior than what the skill author defined.
+
+Pipeline YAML `allowed_tools` overrides the skill manifest if specified.
 
 ## prompt.md Template
 

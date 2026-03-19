@@ -62,9 +62,11 @@ src/
 
 6. **Agent loop**: Each stage runs an iterative agent loop (chat → tool calls → execute → chat) with built-in filesystem tools (read_file, write_file, list_files, run_command, search_files).
 
-7. **Pipeline execution**: Stages run sequentially by default. `depends_on` creates a DAG. The executor resolves the DAG and runs independent stages in parallel.
+7. **Pipeline execution**: Stages run sequentially by default. `depends_on` creates a DAG. The executor resolves the DAG and runs independent stages in parallel. Ctrl+C cancels a running pipeline via AbortController propagation.
 
 8. **Policies are declarative**: Defined in pipeline YAML, evaluated before each context read/write. A stage trying to write outside its allowed namespaces gets a hard error.
+
+9. **Skill-based tool permissions**: Each skill declares its `allowed_tools` in `skill.yaml`. This is enforced at the tool registry level — if a tool isn't listed, the LLM cannot call it regardless of what it tries. There are no hardcoded stage types — each skill author decides what their skill can do. The pipeline YAML `allowed_tools` field overrides the skill's defaults if the user wants different behavior. If neither the skill nor the YAML defines `allowed_tools`, the stage has access to all tools.
 
 ## Code Conventions
 
@@ -122,6 +124,8 @@ stages:
     depends_on: string[]        # Stage dependencies (DAG)
     max_tokens: number          # Max tokens per request
     temperature: number         # Temperature (0-2)
+    allowed_tools: string[]     # Optional override. Defaults come from skill.yaml manifest.
+                                # Available: read_file, write_file, list_files, run_command, search_files
     on_fail:
       retry_stage: string       # Stage to re-run on failure
       max_retries: number
@@ -153,6 +157,39 @@ type ResolvedProvider = {
 ```
 This is the internal representation — users never write these fields manually.
 `PipelineConfig.providers` is `Record<string, ResolvedProvider>`.
+
+### Skill Manifest (`skill.yaml`)
+
+Each skill directory contains `prompt.md` (the LLM prompt) and `skill.yaml` (the manifest).
+The manifest defines the skill's default tool permissions. There are no hardcoded "stage types" —
+each skill author decides what their skill can and cannot do.
+
+```yaml
+name: arch-planner
+version: "1.0"
+description: Analyzes requirements and produces a technical plan.
+
+context:
+  reads: ["input.*"]
+  writes: ["planner.*"]
+
+# Tool permissions — enforced at the registry level, not by prompt.
+# The skill author decides what tools this skill needs.
+# Available: read_file, write_file, list_files, run_command, search_files
+allowed_tools:
+  - read_file
+  - list_files
+  - search_files
+
+constraints:
+  min_tokens: 4000
+  recommended_models: [claude-opus-4-5-20250520, gpt-4o]
+```
+
+**Resolution order** (first match wins):
+1. Pipeline YAML `allowed_tools` — user override, full control
+2. Skill `skill.yaml` `allowed_tools` — skill author's default
+3. All tools — fallback if neither defines it
 
 ## CLI Usage
 

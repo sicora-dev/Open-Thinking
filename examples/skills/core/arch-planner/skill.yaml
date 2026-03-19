@@ -1,0 +1,21 @@
+name: arch-planner
+version: "1.0"
+description: >
+  Analyzes project requirements and produces a detailed technical plan.
+  Read-only — examines existing code but never writes files or runs commands.
+
+context:
+  reads: ["input.*"]
+  writes: ["planner.*"]
+
+allowed_tools:
+  - read_file
+  - list_files
+  - search_files
+
+constraints:
+  min_tokens: 4000
+  recommended_models:
+    - claude-opus-4-5-20250520
+    - claude-sonnet-4-20250514
+    - gpt-4o
