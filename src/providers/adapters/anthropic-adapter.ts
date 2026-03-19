@@ -33,15 +33,46 @@ export function createAnthropicAdapter(config: AnthropicConfig): LLMProvider {
     "anthropic-version": ANTHROPIC_API_VERSION,
   };
 
-  type AnthropicMessage = { role: "user" | "assistant"; content: string };
+  type AnthropicContent = string | Array<Record<string, unknown>>;
+  type AnthropicMessage = { role: "user" | "assistant"; content: AnthropicContent };
 
   function buildRequestBody(request: ChatRequest): Record<string, unknown> {
     const messages: AnthropicMessage[] = [];
 
     for (const msg of request.messages) {
       if (msg.role === "system") continue; // handled separately
-      if (msg.role === "user" || msg.role === "assistant") {
-        messages.push({ role: msg.role, content: msg.content });
+
+      if (msg.role === "assistant") {
+        // If assistant has tool_calls, convert to Anthropic content blocks
+        if (msg.tool_calls?.length) {
+          const blocks: Array<Record<string, unknown>> = [];
+          if (msg.content) blocks.push({ type: "text", text: msg.content });
+          for (const tc of msg.tool_calls) {
+            blocks.push({
+              type: "tool_use",
+              id: tc.id,
+              name: tc.function.name,
+              input: JSON.parse(tc.function.arguments),
+            });
+          }
+          messages.push({ role: "assistant", content: blocks });
+        } else {
+          messages.push({ role: "assistant", content: msg.content });
+        }
+      } else if (msg.role === "tool") {
+        // Anthropic expects tool results as user messages with tool_result blocks
+        messages.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: msg.tool_call_id,
+              content: msg.content,
+            },
+          ],
+        });
+      } else if (msg.role === "user") {
+        messages.push({ role: "user", content: msg.content });
       }
     }
 

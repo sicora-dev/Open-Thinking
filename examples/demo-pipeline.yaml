@@ -10,7 +10,7 @@ providers:
   openai:
     type: openai-compatible
     base_url: https://api.openai.com/v1
-    api_key: sk-demo-key
+    api_key: ${OPENAI_API_KEY}
   local:
     type: ollama
     base_url: http://localhost:11434
@@ -18,18 +18,18 @@ providers:
 stages:
   planner:
     provider: openai
-    model: gpt-4
+    model: gpt-4o
     skill: core/arch-planner@1.0
     context:
-      read: []
-      write: ["plan.*"]
+      read: ["input.*"]
+      write: ["planner.*"]
   coder:
     provider: local
-    model: codellama
+    model: qwen3.5:9b
     skill: core/code-writer@1.0
     context:
-      read: ["plan.*"]
-      write: ["code.*"]
+      read: ["input.*", "planner.*"]
+      write: ["coder.*"]
     depends_on: [planner]
 
 policies:

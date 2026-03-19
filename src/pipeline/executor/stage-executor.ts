@@ -3,6 +3,8 @@
  * Handles sequential/parallel execution, context I/O, policy enforcement,
  * and failure routing (retry, re-route).
  */
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { EventBus } from "../../core/events/event-bus";
 import type { PolicyEngine } from "../../policies/engine";
 import { ProviderError } from "../../shared/errors";
@@ -18,6 +20,8 @@ import type {
   StageResult,
   TokenUsage,
 } from "../../shared/types";
+import { createToolRegistry } from "../../tools";
+import { runAgentLoop } from "./agent-loop";
 
 export type ExecutorDeps = {
   config: PipelineConfig;
@@ -25,6 +29,8 @@ export type ExecutorDeps = {
   contextStore: ContextStore;
   policyEngine: PolicyEngine;
   eventBus: EventBus;
+  /** Base directory for resolving skill paths. Defaults to cwd. */
+  skillsDir?: string;
 };
 
 /**
@@ -118,6 +124,26 @@ function formatContextForPrompt(context: Record<string, string>): string {
 }
 
 /**
+ * Load a skill's prompt.md file. Skill references look like "core/arch-planner@1.0".
+ * We resolve to: <skillsDir>/<namespace>/<name>/prompt.md
+ */
+function loadSkillPrompt(skillRef: string, skillsDir: string): string | null {
+  // Parse "namespace/name@version" or just "name"
+  const withoutVersion = skillRef.split("@")[0] ?? skillRef;
+  const parts = withoutVersion.split("/");
+  const first = parts[0] ?? withoutVersion;
+  const skillPath =
+    parts.length >= 2
+      ? join(skillsDir, first, parts.slice(1).join("/"), "prompt.md")
+      : join(skillsDir, first, "prompt.md");
+
+  if (existsSync(skillPath)) {
+    return readFileSync(skillPath, "utf-8").trim();
+  }
+  return null;
+}
+
+/**
  * Write stage output to context store, respecting write policies.
  */
 async function writeStageOutput(
@@ -201,23 +227,42 @@ async function executeStage(
 
   const contextBlock = formatContextForPrompt(contextResult.value);
 
+  // Load skill prompt if available
+  const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
+  const skillPrompt = loadSkillPrompt(stageDef.skill, skillsDir);
+
+  // Build tool registry for this stage
+  const toolRegistry = createToolRegistry(process.cwd());
+
   // Build chat request
+  const systemPrompt = skillPrompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
   const request: ChatRequest = {
     model: stageDef.model,
     messages: [
       {
         role: "user",
-        content: `You are the "${stageName}" stage in a pipeline. Complete your task.${contextBlock}`,
+        content: contextBlock
+          ? `Complete your task based on the following context.${contextBlock}`
+          : "Complete your task.",
       },
     ],
+    systemPrompt,
     maxTokens: stageDef.max_tokens,
     temperature: stageDef.temperature,
+    tools: toolRegistry.definitions(),
   };
 
-  // Call provider
-  const chatResult = await provider.chat(request);
-  if (!chatResult.ok) {
-    const error = chatResult.error.message;
+  // Run agent loop (iterates: chat -> tool calls -> chat -> ... -> stop)
+  const loopResult = await runAgentLoop({
+    provider,
+    request,
+    toolRegistry,
+    maxIterations: 25,
+    eventBus,
+    stageName,
+  });
+  if (!loopResult.ok) {
+    const error = loopResult.error.message;
     eventBus.emit({ type: "stage:error", stageName, error });
     return {
       stageName,
@@ -228,10 +273,10 @@ async function executeStage(
     };
   }
 
-  const response = chatResult.value;
+  const agentResult = loopResult.value;
 
   // Cost tracking
-  const cost = estimateCost(response.usage);
+  const cost = estimateCost(agentResult.totalUsage);
   const costCheck = policyEngine.recordCost(cost, stageName);
   if (!costCheck.ok) {
     const error = costCheck.error.message;
@@ -242,7 +287,7 @@ async function executeStage(
       status: "failed",
       durationMs: Date.now() - start,
       error,
-      usage: response.usage,
+      usage: agentResult.totalUsage,
       cost,
       contextKeysWritten: [],
     };
@@ -252,7 +297,7 @@ async function executeStage(
   const writeResult = await writeStageOutput(
     stageName,
     stageDef.context,
-    response.content,
+    agentResult.finalContent,
     contextStore,
     policyEngine,
     eventBus,
@@ -271,8 +316,8 @@ async function executeStage(
   const result: StageResult = {
     stageName,
     status: "success",
-    output: response.content,
-    usage: response.usage,
+    output: agentResult.finalContent,
+    usage: agentResult.totalUsage,
     cost,
     durationMs: Date.now() - start,
     contextKeysWritten,

@@ -206,4 +206,12 @@ export type PipelineEvent =
   | { type: "stage:error"; stageName: string; error: string }
   | { type: "context:read"; stageName: string; key: string }
   | { type: "context:write"; stageName: string; key: string }
-  | { type: "policy:violation"; stageName: string; rule: string; detail: string };
+  | { type: "policy:violation"; stageName: string; rule: string; detail: string }
+  | { type: "tool:call"; stageName: string; toolName: string; args: Record<string, unknown> }
+  | {
+      type: "tool:result";
+      stageName: string;
+      toolName: string;
+      durationMs: number;
+      success: boolean;
+    };

@@ -1,6 +1,7 @@
 /**
  * `openmind run` — Execute a pipeline.
  */
+import { dirname, resolve } from "node:path";
 import type { Command } from "commander";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
@@ -10,14 +11,32 @@ import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
 import type { LLMProvider } from "../../shared/types";
 
+type RunOptions = {
+  pipeline: string;
+  input?: string;
+  stage?: string;
+  dryRun?: boolean;
+  skillsDir?: string;
+};
+
 export function registerRunCommand(program: Command): void {
   program
     .command("run")
     .description("Execute a pipeline")
     .requiredOption("-p, --pipeline <path>", "Pipeline YAML file path")
+    .option("-i, --input <text>", "Input prompt describing what the pipeline should do")
     .option("-s, --stage <name>", "Execute a single stage only")
+    .option("--skills-dir <path>", "Skills directory (default: skills/ next to pipeline file)")
     .option("--dry-run", "Show execution plan without running")
-    .action(async (options: { pipeline: string; stage?: string; dryRun?: boolean }) => {
+    .action(async (options: RunOptions) => {
+      if (!options.input) {
+        console.error("Error: --input is required. Tell the pipeline what to do.");
+        console.error(
+          '  Example: openmind run -p pipeline.yaml -i "Build a REST API for a todo app"',
+        );
+        process.exit(1);
+      }
+
       // Parse pipeline
       const parseResult = await parsePipeline(options.pipeline);
       if (!parseResult.ok) {
@@ -26,7 +45,8 @@ export function registerRunCommand(program: Command): void {
       }
 
       const config = parseResult.value;
-      console.log(`Pipeline: ${config.name} v${config.version}\n`);
+      console.log(`Pipeline: ${config.name} v${config.version}`);
+      console.log(`Input: ${options.input}\n`);
 
       // Resolve execution order
       const orderResult = resolveExecutionOrder(config.stages);
@@ -70,6 +90,13 @@ export function registerRunCommand(program: Command): void {
       const contextStore = createContextStore({ dbPath: ":memory:" });
       const eventBus = createEventBus();
 
+      // Seed user input into context store
+      await contextStore.set("input.prompt", options.input, "user");
+
+      // Resolve skills directory
+      const pipelineDir = dirname(resolve(options.pipeline));
+      const skillsDir = options.skillsDir ?? resolve(pipelineDir, "skills");
+
       // Wire up live event output
       eventBus.on("stage:start", (e) => {
         if (e.type === "stage:start") {
@@ -88,6 +115,23 @@ export function registerRunCommand(program: Command): void {
           console.error(`[${e.stageName}] Error: ${e.error}`);
         }
       });
+      eventBus.on("tool:call", (e) => {
+        if (e.type === "tool:call") {
+          const argSummary = Object.entries(e.args)
+            .map(([k, v]) => {
+              const s = String(v);
+              return `${k}=${s.length > 40 ? `${s.slice(0, 40)}...` : s}`;
+            })
+            .join(", ");
+          console.log(`  [${e.stageName}] -> ${e.toolName}(${argSummary})`);
+        }
+      });
+      eventBus.on("tool:result", (e) => {
+        if (e.type === "tool:result") {
+          const status = e.success ? "ok" : "error";
+          console.log(`  [${e.stageName}] <- ${e.toolName} ${status} (${e.durationMs}ms)`);
+        }
+      });
 
       // Execute
       const result = await executePipeline({
@@ -96,6 +140,7 @@ export function registerRunCommand(program: Command): void {
         contextStore,
         policyEngine: policyResult.value,
         eventBus,
+        skillsDir,
       });
 
       contextStore.close();
@@ -116,7 +161,7 @@ export function registerRunCommand(program: Command): void {
         console.log(`\n[${stage.stageName}] ${stage.status}`);
         if (stage.output) {
           const preview =
-            stage.output.length > 200 ? `${stage.output.slice(0, 200)}...` : stage.output;
+            stage.output.length > 500 ? `${stage.output.slice(0, 500)}...` : stage.output;
           console.log(preview);
         }
         if (stage.error) {
