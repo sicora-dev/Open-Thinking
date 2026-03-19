@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { ProviderConfig } from "../../shared/types";
+import type { ResolvedProvider } from "../../shared/types";
 import { createProviderFromConfig } from "./provider-factory";
 
 describe("Provider Factory", () => {
   test("creates OpenAI-compatible adapter", () => {
-    const config: ProviderConfig = {
+    const config: ResolvedProvider = {
       type: "openai-compatible",
       base_url: "https://api.openai.com/v1",
       api_key: "sk-test",
@@ -17,7 +17,7 @@ describe("Provider Factory", () => {
   });
 
   test("creates Anthropic adapter when base_url contains anthropic.com", () => {
-    const config: ProviderConfig = {
+    const config: ResolvedProvider = {
       type: "openai-compatible",
       base_url: "https://api.anthropic.com/v1",
       api_key: "sk-ant-test",
@@ -30,7 +30,7 @@ describe("Provider Factory", () => {
   });
 
   test("returns error for Anthropic without api_key", () => {
-    const config: ProviderConfig = {
+    const config: ResolvedProvider = {
       type: "openai-compatible",
       base_url: "https://api.anthropic.com/v1",
     };
@@ -42,7 +42,7 @@ describe("Provider Factory", () => {
   });
 
   test("creates Ollama adapter", () => {
-    const config: ProviderConfig = {
+    const config: ResolvedProvider = {
       type: "ollama",
       base_url: "http://localhost:11434",
     };
@@ -54,7 +54,7 @@ describe("Provider Factory", () => {
   });
 
   test("creates custom adapter", () => {
-    const config: ProviderConfig = {
+    const config: ResolvedProvider = {
       type: "custom",
       base_url: "https://my-proxy.com/v1",
       api_key: "custom-key",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { parsePipelineFromString } from "./pipeline-parser";
 
+// ─── New format: providers as a list of names ────────────────
 const VALID_PIPELINE = `
 name: test-pipeline
 version: "1.0"
@@ -11,14 +12,11 @@ context:
   ttl: 7d
 
 providers:
-  test-provider:
-    type: openai-compatible
-    base_url: https://api.example.com/v1
-    api_key: test-key-123
+  - openai
 
 stages:
   planning:
-    provider: test-provider
+    provider: openai
     model: gpt-4o
     skill: test/planner@1.0
     context:
@@ -26,7 +24,7 @@ stages:
       write: [plan.*]
 
   develop:
-    provider: test-provider
+    provider: openai
     model: gpt-4o
     skill: test/coder@1.0
     context:
@@ -40,16 +38,103 @@ policies:
     audit_log: true
 `;
 
+// ─── Legacy format: providers as records ─────────────────────
+const LEGACY_PIPELINE = `
+name: legacy-pipeline
+version: "1.0"
+
+providers:
+  my-provider:
+    type: openai-compatible
+    base_url: https://api.example.com/v1
+    api_key: test-key-123
+
+stages:
+  planning:
+    provider: my-provider
+    model: gpt-4o
+    skill: test/planner@1.0
+    context:
+      read: []
+      write: [plan.*]
+
+policies:
+  global: {}
+`;
+
 describe("parsePipelineFromString", () => {
-  it("parses a valid pipeline YAML", () => {
+  it("parses a valid pipeline with provider list", () => {
     const result = parsePipelineFromString(VALID_PIPELINE);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     expect(result.value.name).toBe("test-pipeline");
     expect(result.value.version).toBe("1.0");
-    expect(Object.keys(result.value.providers)).toEqual(["test-provider"]);
+    expect(Object.keys(result.value.providers)).toEqual(["openai"]);
+    expect(result.value.providers.openai?.base_url).toContain("openai.com");
     expect(Object.keys(result.value.stages)).toEqual(["planning", "develop"]);
+  });
+
+  it("parses legacy record-based providers", () => {
+    const result = parsePipelineFromString(LEGACY_PIPELINE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.name).toBe("legacy-pipeline");
+    expect(Object.keys(result.value.providers)).toEqual(["my-provider"]);
+    expect(result.value.providers["my-provider"]?.base_url).toBe("https://api.example.com/v1");
+  });
+
+  it("parses mixed array with custom providers", () => {
+    const yaml = `
+name: mixed
+version: "1.0"
+providers:
+  - openai
+  - id: my-custom
+    base_url: https://custom.api.com/v1
+    api_key: custom-key
+stages:
+  s1:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    context: { read: [], write: [] }
+  s2:
+    provider: my-custom
+    model: custom-model
+    skill: s@1
+    context: { read: [], write: [] }
+policies:
+  global: {}
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(Object.keys(result.value.providers)).toEqual(["openai", "my-custom"]);
+    expect(result.value.providers["my-custom"]?.base_url).toBe("https://custom.api.com/v1");
+  });
+
+  it("rejects unknown provider names in list", () => {
+    const yaml = `
+name: bad
+version: "1.0"
+providers:
+  - totally-fake-provider
+stages:
+  s1:
+    provider: totally-fake-provider
+    model: m
+    skill: s@1
+    context: { read: [], write: [] }
+policies:
+  global: {}
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("totally-fake-provider");
   });
 
   it("validates stage dependencies exist", () => {
@@ -57,17 +142,13 @@ describe("parsePipelineFromString", () => {
 name: bad-deps
 version: "1.0"
 providers:
-  p:
-    type: openai-compatible
-    base_url: https://api.example.com
+  - openai
 stages:
   stage-a:
-    provider: p
+    provider: openai
     model: gpt-4o
     skill: test/s@1.0
-    context:
-      read: []
-      write: []
+    context: { read: [], write: [] }
     depends_on: [non-existent-stage]
 policies:
   global: {}
@@ -83,17 +164,13 @@ policies:
 name: bad-provider
 version: "1.0"
 providers:
-  real-provider:
-    type: openai-compatible
-    base_url: https://api.example.com
+  - openai
 stages:
   stage-a:
     provider: fake-provider
     model: gpt-4o
     skill: test/s@1.0
-    context:
-      read: []
-      write: []
+    context: { read: [], write: [] }
 policies:
   global: {}
 `;
@@ -111,7 +188,7 @@ policies:
   it("rejects missing name field", () => {
     const yaml = `
 version: "1.0"
-providers: {}
+providers: []
 stages: {}
 policies:
   global: {}
@@ -127,18 +204,16 @@ policies:
 name: circular
 version: "1.0"
 providers:
-  p:
-    type: openai-compatible
-    base_url: https://api.example.com
+  - openai
 stages:
   a:
-    provider: p
+    provider: openai
     model: m
     skill: s@1
     context: { read: [], write: [] }
     depends_on: [b]
   b:
-    provider: p
+    provider: openai
     model: m
     skill: s@1
     context: { read: [], write: [] }
@@ -160,5 +235,25 @@ policies:
     const stageNames = Object.keys(result.value.stages);
     expect(stageNames[0]).toBe("planning");
     expect(stageNames[1]).toBe("develop");
+  });
+
+  it("defaults context and policies when omitted", () => {
+    const yaml = `
+name: minimal
+version: "1.0"
+providers:
+  - openai
+stages:
+  s1:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    context: { read: [], write: [] }
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.context.backend).toBe("sqlite");
+    expect(result.value.policies.global).toBeDefined();
   });
 });

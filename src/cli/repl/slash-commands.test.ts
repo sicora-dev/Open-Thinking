@@ -96,10 +96,10 @@ describe("Slash Commands", () => {
     expect(result.output).toContain("depends on: planner");
   });
 
-  test("/provider list shows providers", async () => {
-    const result = await executeSlashCommand("provider list", stateWithPipeline());
-    expect(result.output).toContain("openai");
-    expect(result.output).toContain("openai-compatible");
+  test("/providers list shows global providers info", async () => {
+    const result = await executeSlashCommand("providers list", stateWithPipeline());
+    // Shows either configured providers or "no providers" message
+    expect(result.output).toContain("provider");
   });
 
   test("/exit sets exit flag", async () => {

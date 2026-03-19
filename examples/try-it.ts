@@ -6,27 +6,27 @@ import { parsePipeline } from "../src/pipeline/parser";
 import { createContextStore } from "../src/context/store";
 import { createProviderFromConfig } from "../src/providers";
 
-// 1. Parse a pipeline file
+// 1. Parse a pipeline file (providers are resolved from catalog automatically)
 const pipelinePath = new URL("./demo-pipeline.yaml", import.meta.url).pathname;
 const parseResult = await parsePipeline(pipelinePath);
 
 if (!parseResult.ok) {
-  console.error("❌ Parse error:", parseResult.error.message);
+  console.error("Parse error:", parseResult.error.message);
   process.exit(1);
 }
 
 const pipeline = parseResult.value;
-console.log("✅ Pipeline parsed:", pipeline.name, `v${pipeline.version}`);
+console.log("Pipeline parsed:", pipeline.name, `v${pipeline.version}`);
 console.log("   Stages:", Object.keys(pipeline.stages).join(", "));
 console.log("   Providers:", Object.keys(pipeline.providers).join(", "));
 
-// 2. Create providers from config
+// 2. Create providers from resolved config
 for (const [name, config] of Object.entries(pipeline.providers)) {
   const result = createProviderFromConfig(name, config);
   if (result.ok) {
-    console.log(`✅ Provider "${name}" created (${config.type})`);
+    console.log(`Provider "${name}" created (${config.type} @ ${config.base_url})`);
   } else {
-    console.log(`⚠️  Provider "${name}" skipped:`, result.error.message);
+    console.log(`Provider "${name}" skipped:`, result.error.message);
   }
 }
 
@@ -39,7 +39,7 @@ await store.set("code.entrypoint", "console.log('hello world')", "coder");
 
 const allEntries = await store.list();
 if (allEntries.ok) {
-  console.log("\n📦 Context store entries:");
+  console.log("\nContext store entries:");
   for (const entry of allEntries.value) {
     console.log(`   ${entry.key} (by ${entry.createdBy}): ${entry.value.slice(0, 60)}`);
   }
@@ -47,8 +47,8 @@ if (allEntries.ok) {
 
 const planEntries = await store.list("plan.");
 if (planEntries.ok) {
-  console.log(`\n🔍 Entries in "plan.*" namespace: ${planEntries.value.length}`);
+  console.log(`\nEntries in "plan.*" namespace: ${planEntries.value.length}`);
 }
 
 store.close();
-console.log("\n✨ Done!");
+console.log("\nDone!");

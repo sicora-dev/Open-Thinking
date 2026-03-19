@@ -26,7 +26,7 @@ Check in this order:
 - Policy blocks the read → check `context.read` in the stage definition
 
 ### Provider returns error
-- 401 → API key issue. Check env var interpolation
+- 401 → API key issue. Check `/providers list` or re-run `/providers setup`
 - 429 → Rate limited. Check `policies.global.rate_limit`
 - 500 → Provider issue. Try `provider test <name>`
 - Timeout → Increase timeout in provider config

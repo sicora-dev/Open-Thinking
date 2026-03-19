@@ -1,5 +1,4 @@
 # OpenMind Pipeline Configuration
-# Docs: https://github.com/your-org/openmind
 
 name: feature-development
 version: "1.0"
@@ -9,20 +8,13 @@ context:
   vector: embedded
   ttl: 7d
 
+# Just list providers by name. API keys come from ~/.openmind/providers.json.
+# For custom providers not in the catalog, use the object form:
+#   - id: my-custom
+#     base_url: https://custom.api.com/v1
 providers:
-  anthropic:
-    type: openai-compatible
-    base_url: https://api.anthropic.com/v1
-    api_key: ${ANTHROPIC_API_KEY}
-
-  moonshot:
-    type: openai-compatible
-    base_url: https://api.moonshot.cn/v1
-    api_key: ${KIMI_API_KEY}
-
-  local:
-    type: ollama
-    base_url: http://localhost:11434
+  - anthropic
+  - ollama
 
 stages:
   planning:
@@ -30,14 +22,14 @@ stages:
     model: claude-opus-4-5-20250520
     skill: openmind/arch-planner@1.0
     context:
-      read: [requirements.*]
+      read: ["input.*"]
       write: [plan.*]
     max_tokens: 16000
     temperature: 0.7
 
   develop:
-    provider: moonshot
-    model: kimi-k2-0711
+    provider: anthropic
+    model: claude-sonnet-4-20250514
     skill: openmind/code-writer@1.0
     context:
       read: [plan.*, code.decisions]

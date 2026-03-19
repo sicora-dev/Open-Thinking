@@ -13,27 +13,26 @@ context:
   vector: embedded
   ttl: "7d"
 
+# Providers are resolved automatically from the catalog.
+# API keys come from ~/.openmind/providers.json (run: openmind, then /providers setup).
 providers:
-  openai:
-    type: openai-compatible
-    base_url: https://api.openai.com/v1
-    api_key: \${OPENAI_API_KEY}
+  - openai
 
 stages:
   planner:
     provider: openai
-    model: gpt-4
+    model: gpt-4o
     skill: core/arch-planner@1.0
     context:
-      read: []
+      read: ["input.*"]
       write: ["plan.*"]
 
   coder:
     provider: openai
-    model: gpt-4
+    model: gpt-4o
     skill: core/code-writer@1.0
     context:
-      read: ["plan.*"]
+      read: ["input.*", "plan.*"]
       write: ["code.*"]
     depends_on: [planner]
 
@@ -68,8 +67,8 @@ export function registerInitCommand(program: Command): void {
       console.log("  Created openmind.pipeline.yaml");
       console.log("  Created skills/");
       console.log("\nNext steps:");
-      console.log("  1. Set your OPENAI_API_KEY environment variable");
+      console.log("  1. Run 'openmind' and use /providers setup to configure API keys");
       console.log("  2. Edit openmind.pipeline.yaml to configure your pipeline");
-      console.log("  3. Run: openmind run -p openmind.pipeline.yaml");
+      console.log("  3. Run 'openmind' and type your prompt to execute the pipeline");
     });
 }

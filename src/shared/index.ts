@@ -15,7 +15,7 @@ export { logger, setLogLevel, type LogLevel } from "./logger";
 export type {
   PipelineConfig,
   ContextConfig,
-  ProviderConfig,
+  ResolvedProvider,
   StageDefinition,
   StageContextPermissions,
   FailureConfig,

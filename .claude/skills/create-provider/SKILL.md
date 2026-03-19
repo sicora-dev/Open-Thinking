@@ -18,43 +18,65 @@ type LLMProvider = {
   listModels(): Promise<Result<ModelInfo[]>>;
   healthCheck(): Promise<Result<boolean>>;
 };
+```
 
-type ChatRequest = {
-  model: string;
-  messages: Message[];
-  maxTokens?: number;
-  temperature?: number;
-  systemPrompt?: string;
-  tools?: ToolDefinition[];
+## Provider Resolution
+
+Providers in the pipeline YAML are just names (e.g., `- openai`). The parser resolves them to a `ResolvedProvider` using:
+
+1. **Provider catalog** (`src/config/provider-catalog.ts`): contains `baseUrl`, `type`, `envVar` for 18+ providers
+2. **Global config** (`~/.openmind/providers.json`): API keys stored via `/providers setup`
+
+```typescript
+type ResolvedProvider = {
+  type: "openai-compatible" | "ollama" | "custom";
+  base_url: string;
+  api_key?: string;
+  headers?: Record<string, string>;
 };
 ```
 
+Users do NOT specify `type`, `base_url`, or `api_key` in the YAML for known providers.
+
 ## Base adapter: OpenAI-compatible
 
-Most providers support the OpenAI chat completions format. The base adapter at `src/providers/adapters/openai-compatible.ts` handles:
-- POST `/v1/chat/completions` for chat
-- POST `/v1/chat/completions` with `stream: true` for SSE streaming
-- GET `/v1/models` for model listing
+Most providers support the OpenAI chat completions format. The base adapter at `src/providers/adapters/openai-compatible-adapter.ts` handles:
+- POST `/chat/completions` for chat
+- POST `/chat/completions` with `stream: true` for SSE streaming
+- GET `/models` for model listing
 
 ## Creating a new adapter
 
 1. Check if the provider supports OpenAI-compatible API:
-   - **YES** → Extend `OpenAICompatibleAdapter` with just config overrides (base_url, auth headers)
-   - **NO** → Implement `LLMProvider` from scratch, translating to/from the provider's native format
+   - **YES** → Just add it to `src/config/provider-catalog.ts` with the right `baseUrl`. No new adapter code needed.
+   - **Partially** → Extend `OpenAICompatibleAdapter` with translation (like `anthropic-adapter.ts`)
+   - **NO** → Implement `LLMProvider` from scratch
 
-2. Place the adapter in `src/providers/adapters/{provider-name}.ts`
+2. If a new adapter file is needed, place it in `src/providers/adapters/{provider-name}-adapter.ts`
 
-3. Handle authentication:
-   - API key via `${ENV_VAR}` interpolation from pipeline YAML
-   - Bearer token in Authorization header (most providers)
-   - Custom auth schemes if needed (document in the adapter)
+3. Add provider detection in `src/providers/adapters/provider-factory.ts` (switch on `config.type` or check `config.base_url`)
 
-4. Handle streaming:
-   - Parse SSE `data: ` lines
-   - Handle `[DONE]` sentinel
-   - Yield `StreamChunk` objects with delta content
+4. Always add the provider to `src/config/provider-catalog.ts` so users can configure it via `/providers setup`
 
-5. Register in `src/providers/adapters/index.ts` with the provider type string
+## Adding a new catalog provider
+
+Most new providers just need an entry in `src/config/provider-catalog.ts`:
+
+```typescript
+{
+  id: "new-provider",
+  name: "New Provider",
+  baseUrl: "https://api.newprovider.com/v1",
+  type: "openai-compatible",
+  envVar: "NEW_PROVIDER_API_KEY",
+  description: "Models available from this provider",
+  category: "cloud",
+  requiresKey: true,
+  signupUrl: "https://newprovider.com/api-keys",
+}
+```
+
+No YAML changes, no adapter code, no env var setup needed. The provider catalog + global config handle everything.
 
 ## Testing
 

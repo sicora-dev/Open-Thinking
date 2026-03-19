@@ -9,7 +9,8 @@ export type PipelineConfig = {
   name: string;
   version: string;
   context: ContextConfig;
-  providers: Record<string, ProviderConfig>;
+  /** Resolved providers keyed by provider ID (e.g., "openai", "anthropic"). */
+  providers: Record<string, ResolvedProvider>;
   stages: Record<string, StageDefinition>;
   policies: PoliciesConfig;
 };
@@ -20,7 +21,24 @@ export type ContextConfig = {
   ttl: string; // e.g., "7d", "24h"
 };
 
-export type ProviderConfig = {
+/**
+ * Resolved provider configuration (internal, after parsing).
+ * Users don't write these fields in YAML — they're inferred from the provider
+ * catalog and global config (~/.openmind/providers.json).
+ *
+ * In the pipeline YAML, providers are declared as a simple list:
+ *   providers:
+ *     - openai
+ *     - anthropic
+ *     - ollama
+ *
+ * Or with overrides for custom providers:
+ *   providers:
+ *     - id: my-custom
+ *       base_url: https://custom.api.com/v1
+ *       api_key: ${MY_KEY}
+ */
+export type ResolvedProvider = {
   type: "openai-compatible" | "ollama" | "custom";
   base_url: string;
   api_key?: string;
@@ -35,6 +53,8 @@ export type StageDefinition = {
   depends_on?: string[];
   max_tokens?: number;
   temperature?: number;
+  /** Max agent loop iterations (tool call rounds). Default: 50. */
+  max_iterations?: number;
   on_fail?: FailureConfig;
 };
 

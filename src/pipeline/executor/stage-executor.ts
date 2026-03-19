@@ -253,11 +253,12 @@ async function executeStage(
   };
 
   // Run agent loop (iterates: chat -> tool calls -> chat -> ... -> stop)
+  const maxIterations = stageDef.max_iterations ?? 50;
   const loopResult = await runAgentLoop({
     provider,
     request,
     toolRegistry,
-    maxIterations: 25,
+    maxIterations,
     eventBus,
     stageName,
   });

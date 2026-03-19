@@ -1,16 +1,18 @@
 import { ProviderError } from "../../shared/errors";
 import { type Result, err, ok } from "../../shared/result";
 /**
- * Factory that creates an LLMProvider from a pipeline ProviderConfig.
+ * Factory that creates an LLMProvider from a resolved provider config.
+ * The config is already resolved from the provider catalog and global keys
+ * by the pipeline parser — this factory just instantiates the right adapter.
  */
-import type { LLMProvider, ProviderConfig } from "../../shared/types";
+import type { LLMProvider, ResolvedProvider } from "../../shared/types";
 import { createAnthropicAdapter } from "./anthropic-adapter";
 import { createOllamaAdapter } from "./ollama-adapter";
 import { createOpenAICompatibleAdapter } from "./openai-compatible-adapter";
 
 export function createProviderFromConfig(
   name: string,
-  config: ProviderConfig,
+  config: ResolvedProvider,
 ): Result<LLMProvider> {
   switch (config.type) {
     case "openai-compatible": {

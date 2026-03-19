@@ -1,6 +1,10 @@
 /**
  * Agent loop: iteratively calls an LLM, executes tool calls, and feeds
  * results back until the model stops requesting tools.
+ *
+ * If the model stops early (few tool calls made), the loop sends a
+ * continuation prompt to push the model to finish its work. This helps
+ * with smaller models that tend to stop after scaffolding.
  */
 import type { EventBus } from "../../core/events/event-bus";
 import { type Result, err, ok } from "../../shared/result";
@@ -27,6 +31,18 @@ export type AgentLoopResult = {
   iterations: number;
 };
 
+/** Max times we'll nudge the model to continue when it stops early. */
+const MAX_CONTINUATIONS = 3;
+
+/**
+ * Minimum "write" tool calls (write_file, run_command) before we consider
+ * the work substantial enough to accept a stop. Read-only calls (read_file,
+ * list_files, search_files) don't count — they're just reconnaissance.
+ */
+const MIN_WRITE_CALLS_BEFORE_ACCEPT_STOP = 5;
+
+const WRITE_TOOLS = new Set(["write_file", "run_command"]);
+
 export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<AgentLoopResult>> {
   const { provider, request, toolRegistry, maxIterations, eventBus, stageName } = config;
 
@@ -34,6 +50,8 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let finalContent = "";
   let iterations = 0;
+  let writeToolCalls = 0;
+  let continuations = 0;
 
   for (let i = 0; i < maxIterations; i++) {
     iterations++;
@@ -67,14 +85,35 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       finalContent = response.content;
     }
 
-    // If no tool calls, we're done
+    // If no tool calls, check if we should nudge the model to continue
     if (response.finishReason !== "tool_calls" || !response.toolCalls?.length) {
+      // Only nudge if the model has written files/run commands but hasn't done
+      // enough yet. This avoids nudging stages that only read or do simple Q&A.
+      if (
+        writeToolCalls > 0 &&
+        writeToolCalls < MIN_WRITE_CALLS_BEFORE_ACCEPT_STOP &&
+        continuations < MAX_CONTINUATIONS &&
+        i < maxIterations - 1
+      ) {
+        continuations++;
+        messages.push({
+          role: "user",
+          content:
+            "You stopped but the task is not complete. Review the plan and continue implementing. " +
+            "Use the tools to create all remaining files. Do not summarize — keep writing code.",
+        });
+        continue;
+      }
+      // Otherwise, accept the stop
       break;
     }
 
     // Execute each tool call
     for (const toolCall of response.toolCalls) {
       const toolName = toolCall.function.name;
+      if (WRITE_TOOLS.has(toolName)) {
+        writeToolCalls++;
+      }
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;

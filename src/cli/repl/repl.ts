@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
  * Opens when you run `openmind` — like Claude Code or Codex.
  */
 import * as readline from "node:readline";
+import { checkFirstRun, listProviders } from "../../config";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
@@ -32,19 +33,29 @@ function c(color: keyof typeof COLORS, text: string): string {
   return `${COLORS[color]}${text}${COLORS.reset}`;
 }
 
-function printBanner(state: ReplState): void {
+function printBanner(state: ReplState, globalProviderCount = 0): void {
   console.log();
   console.log(`  ${c("bold", c("cyan", `OpenMind v${VERSION}`))}`);
   console.log(`  ${c("dim", "AI Pipeline Orchestrator")}`);
   console.log();
 
+  if (globalProviderCount > 0) {
+    console.log(
+      `  ${c("green", "●")} ${globalProviderCount} provider${globalProviderCount !== 1 ? "s" : ""} configured ${c("dim", "(~/.openmind)")}`,
+    );
+  } else {
+    console.log(
+      `  ${c("yellow", "○")} No providers configured ${c("dim", "— run /providers setup")}`,
+    );
+  }
+
   if (state.pipelineConfig) {
     const cfg = state.pipelineConfig;
     const stages = Object.keys(cfg.stages).length;
-    const providers = Object.keys(cfg.providers).length;
+    const pipelineProviders = Object.keys(cfg.providers).length;
     console.log(`  ${c("green", "●")} Pipeline: ${c("bold", cfg.name)} v${cfg.version}`);
     console.log(
-      `    ${stages} stage${stages !== 1 ? "s" : ""}, ${providers} provider${providers !== 1 ? "s" : ""}`,
+      `    ${stages} stage${stages !== 1 ? "s" : ""}, ${pipelineProviders} provider${pipelineProviders !== 1 ? "s" : ""}`,
     );
   } else {
     console.log(`  ${c("yellow", "○")} No pipeline loaded`);
@@ -237,11 +248,16 @@ export async function startRepl(workingDir?: string): Promise<void> {
     skillsDir: null,
   };
 
+  // First-run: prompt for provider setup if no keys configured
+  await checkFirstRun();
+
   // Auto-detect pipeline
   const detected = await autoDetectPipeline(cwd);
   Object.assign(state, detected);
 
-  printBanner(state);
+  // Show configured providers count in banner
+  const globalProviders = listProviders();
+  printBanner(state, globalProviders.length);
 
   const completions = getCommandCompletions();
 

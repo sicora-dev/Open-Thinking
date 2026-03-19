@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
 import { parsePipeline } from "../../pipeline/parser";
 import type { PipelineConfig } from "../../shared/types";
 
@@ -86,30 +87,44 @@ const commands: SlashCommand[] = [
     },
   },
   {
-    name: "provider",
-    aliases: [],
-    description: "List configured providers",
-    usage: "[list|test <name>]",
-    async execute(args, state) {
-      if (!state.pipelineConfig) {
-        return { output: "  No pipeline loaded. Use /pipeline <path> first." };
+    name: "providers",
+    aliases: ["provider"],
+    description: "Manage global API keys and providers",
+    usage: "[setup|list|remove <id>]",
+    async execute(args) {
+      const parts = args.trim().split(/\s+/);
+      const subcommand = parts[0] || "list";
+
+      if (subcommand === "setup" || subcommand === "add") {
+        const count = await runSetupWizard();
+        return { output: count > 0 ? "" : "  No providers configured." };
       }
 
-      const subcommand = args.trim().split(/\s+/)[0] ?? "list";
-
-      if (subcommand === "list" || !subcommand) {
-        const lines = Object.entries(state.pipelineConfig.providers).map(([name, cfg]) => {
-          const key = cfg.api_key ? " (key configured)" : "";
-          return `    ${name}: ${cfg.type} @ ${cfg.base_url}${key}`;
+      if (subcommand === "list") {
+        const providers = listProviders();
+        if (providers.length === 0) {
+          return { output: "  No providers configured. Run /providers setup to add some." };
+        }
+        const lines = providers.map((p: ProviderEntry) => {
+          const masked = p.apiKey
+            ? ` ${p.apiKey.slice(0, 4)}${"•".repeat(8)}${p.apiKey.slice(-4)}`
+            : " (no key)";
+          return `    ${p.id}: ${p.name} @ ${p.baseUrl}${masked}`;
         });
-        return { output: `  Providers:\n${lines.join("\n")}` };
+        return { output: `  Global providers (~/.openmind):\n${lines.join("\n")}` };
       }
 
-      if (subcommand === "test") {
-        return { output: "  Provider testing is not yet implemented in REPL mode." };
+      if (subcommand === "remove" || subcommand === "rm") {
+        const id = parts[1];
+        if (!id) return { output: "  Usage: /providers remove <id>" };
+        const result = removeProvider(id);
+        if (!result.ok) return { output: `  Error: ${result.error.message}` };
+        return {
+          output: result.value ? `  Removed provider: ${id}` : `  Provider not found: ${id}`,
+        };
       }
 
-      return { output: `  Unknown subcommand: ${subcommand}. Use /provider list` };
+      return { output: `  Unknown: /providers ${subcommand}. Use setup, list, or remove.` };
     },
   },
   {
