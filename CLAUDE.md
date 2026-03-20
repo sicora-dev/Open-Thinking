@@ -62,7 +62,7 @@ src/
 
 6. **Agent loop**: Each stage runs an iterative agent loop (chat → tool calls → execute → chat) with built-in filesystem tools (read_file, write_file, list_files, run_command, search_files).
 
-7. **Pipeline execution**: Stages run sequentially by default. `depends_on` creates a DAG. The executor resolves the DAG and runs independent stages in parallel. Ctrl+C cancels a running pipeline via AbortController propagation.
+7. **Pipeline execution**: Two modes. **Sequential** (default): stages run via DAG — `depends_on` defines order, independent stages run in parallel. **Orchestrated**: an LLM orchestrator decides dynamically which agents to invoke via the `delegate` tool. Ctrl+C cancels a running pipeline via AbortController propagation.
 
 8. **Policies are declarative**: Defined in pipeline YAML, evaluated before each context read/write. A stage trying to write outside its allowed namespaces gets a hard error.
 
@@ -96,6 +96,7 @@ compatibility but should not be used in new code or examples.
 ```yaml
 name: string                    # Pipeline name
 version: string                 # Semver
+mode: sequential | orchestrated # Execution mode (default: sequential)
 
 context:                        # Optional (defaults to sqlite/embedded/7d)
   backend: sqlite | postgres    # Storage backend
@@ -121,11 +122,15 @@ stages:
     context:
       read: string[]            # Glob patterns for readable context keys
       write: string[]           # Glob patterns for writable context keys
-    depends_on: string[]        # Stage dependencies (DAG)
+    depends_on: string[]        # Stage dependencies (DAG, sequential mode only)
     max_tokens: number          # Max tokens per request
     temperature: number         # Temperature (0-2)
+    timeout: number             # Timeout per LLM request in seconds (default: 120)
+    max_iterations: number      # Max agent loop iterations (default: 50)
+    role: orchestrator          # Marks this stage as the orchestrator (orchestrated mode only)
     allowed_tools: string[]     # Optional override. Defaults come from skill.yaml manifest.
                                 # Available: read_file, write_file, list_files, run_command, search_files
+                                # In orchestrated mode, the orchestrator also gets: delegate
     on_fail:
       retry_stage: string       # Stage to re-run on failure
       max_retries: number
@@ -137,6 +142,65 @@ policies:                       # Optional
     audit_log: boolean          # Enable audit logging
     cost_limit: string          # Max cost per pipeline run
 ```
+
+### Pipeline Modes
+
+**Sequential** (default): Stages run in static order defined by `depends_on` (DAG). Independent stages run in parallel.
+
+**Orchestrated**: An LLM orchestrator dynamically decides which agents to invoke and in what order. One stage must have `role: orchestrator`. All other stages are available as agents via the `delegate(agent, task)` tool.
+
+Example orchestrated pipeline:
+```yaml
+name: full-stack-dev
+version: "0.1.0"
+mode: orchestrated
+
+providers:
+  - anthropic
+  - openai
+
+stages:
+  orchestrator:
+    provider: anthropic
+    model: claude-opus-4-5-20250520
+    role: orchestrator
+    skill: core/orchestrator@1.0
+    context:
+      read: ["*"]
+      write: ["orchestrator.*"]
+    timeout: 600
+
+  architect:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    skill: core/arch-planner@1.0
+    context:
+      read: ["input.*", "*.output"]
+      write: ["architect.*"]
+    allowed_tools: [read_file, list_files, search_files]
+
+  coder:
+    provider: openai
+    model: gpt-4o
+    skill: core/code-writer@1.0
+    context:
+      read: ["input.*", "architect.*"]
+      write: ["code.*"]
+
+  tester:
+    provider: openai
+    model: gpt-4o
+    skill: core/test-writer@1.0
+    context:
+      read: ["*"]
+      write: ["test.*"]
+```
+
+The orchestrator receives a `delegate` tool automatically:
+- `delegate(agent: string, task: string)` → runs the agent's full loop and returns its output
+- Agents can be called multiple times with different tasks
+- Agent output is written to the context store under `<agent>.output`
+- Each agent respects its own skill, tools, and context permissions
 
 ### Available Provider Names (catalog)
 

@@ -10,7 +10,7 @@ context:
 # API keys and endpoints are resolved automatically.
 providers:
   - anthropic
-  - ollama
+  - openai
 
 stages:
   planner:
@@ -22,8 +22,8 @@ stages:
       read: ["input.*"]
       write: ["planner.*"]
   coder:
-    provider: ollama
-    model: kimi-k2.5:cloud
+    provider: openai
+    model: gpt-5.4-mini
     skill: core/code-writer@1.0
     allowed_tools: [read_file, write_file, list_files, run_command, search_files]
     context:
