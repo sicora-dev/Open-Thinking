@@ -26,7 +26,7 @@ import { parse as parseYaml } from "yaml";
 import { getCatalogProvider, resolveApiKey } from "../../config";
 import { PipelineError } from "../../shared/errors";
 import { type Result, err, ok, tryCatchAsync } from "../../shared/result";
-import type { PipelineConfig, ResolvedProvider } from "../../shared/types";
+import type { PipelineConfig, PipelineMode, ResolvedProvider } from "../../shared/types";
 
 /** Interpolate ${ENV_VAR} references in a string */
 const interpolateEnvVars = (value: string): string =>
@@ -230,14 +230,74 @@ const validateConfig = (
     }
   }
 
-  // Detect circular dependencies
-  const circularCheck = detectCircularDeps(stages);
-  if (!circularCheck.ok) return circularCheck;
+  // Validate mode
+  const mode: PipelineMode = (c.mode as PipelineMode) ?? "sequential";
+  if (mode !== "sequential" && mode !== "orchestrated") {
+    return err(
+      new PipelineError(
+        `Invalid mode "${c.mode}". Must be "sequential" or "orchestrated".`,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  // Validate orchestrated mode constraints
+  if (mode === "orchestrated") {
+    const orchestrators = Object.entries(stages).filter(
+      ([, s]) => s.role === "orchestrator",
+    );
+    if (orchestrators.length === 0) {
+      return err(
+        new PipelineError(
+          'Orchestrated mode requires exactly one stage with role: "orchestrator".',
+          "VALIDATION_ERROR",
+        ),
+      );
+    }
+    if (orchestrators.length > 1) {
+      const names = orchestrators.map(([n]) => n).join(", ");
+      return err(
+        new PipelineError(
+          `Orchestrated mode allows only one orchestrator. Found: ${names}`,
+          "VALIDATION_ERROR",
+        ),
+      );
+    }
+  }
+
+  // Validate role field on stages
+  for (const [stageName, stage] of Object.entries(stages)) {
+    if (stage.role && stage.role !== "orchestrator") {
+      return err(
+        new PipelineError(
+          `Stage "${stageName}" has invalid role "${stage.role}". Only "orchestrator" is supported.`,
+          "VALIDATION_ERROR",
+          { stageName },
+        ),
+      );
+    }
+    if (stage.role === "orchestrator" && mode !== "orchestrated") {
+      return err(
+        new PipelineError(
+          `Stage "${stageName}" has role "orchestrator" but pipeline mode is "${mode}". Set mode: orchestrated.`,
+          "VALIDATION_ERROR",
+          { stageName },
+        ),
+      );
+    }
+  }
+
+  // Detect circular dependencies (only relevant for sequential mode)
+  if (mode === "sequential") {
+    const circularCheck = detectCircularDeps(stages);
+    if (!circularCheck.ok) return circularCheck;
+  }
 
   // Build final config with resolved providers
   const finalConfig: PipelineConfig = {
     name: c.name as string,
     version: c.version as string,
+    mode,
     context: (c.context as PipelineConfig["context"]) ?? {
       backend: "sqlite",
       vector: "embedded",

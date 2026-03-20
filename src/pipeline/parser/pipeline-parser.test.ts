@@ -256,4 +256,127 @@ stages:
     expect(result.value.context.backend).toBe("sqlite");
     expect(result.value.policies.global).toBeDefined();
   });
+
+  // ─── Pipeline mode ──────────────────────────────────────────
+
+  it("defaults mode to sequential", () => {
+    const result = parsePipelineFromString(VALID_PIPELINE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("sequential");
+  });
+
+  it("parses orchestrated mode with valid orchestrator", () => {
+    const yaml = `
+name: orchestrated-pipeline
+version: "1.0"
+mode: orchestrated
+providers:
+  - openai
+stages:
+  orchestrator:
+    provider: openai
+    model: gpt-4o
+    skill: core/orchestrator@1.0
+    role: orchestrator
+    context: { read: ["*"], write: ["orchestrator.*"] }
+  coder:
+    provider: openai
+    model: gpt-4o
+    skill: core/coder@1.0
+    context: { read: ["*"], write: ["code.*"] }
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("orchestrated");
+    expect(result.value.stages.orchestrator?.role).toBe("orchestrator");
+  });
+
+  it("rejects orchestrated mode without orchestrator role", () => {
+    const yaml = `
+name: bad-orchestrated
+version: "1.0"
+mode: orchestrated
+providers:
+  - openai
+stages:
+  s1:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    context: { read: [], write: [] }
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("orchestrator");
+  });
+
+  it("rejects multiple orchestrators", () => {
+    const yaml = `
+name: multi-orchestrator
+version: "1.0"
+mode: orchestrated
+providers:
+  - openai
+stages:
+  orch1:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    role: orchestrator
+    context: { read: [], write: [] }
+  orch2:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    role: orchestrator
+    context: { read: [], write: [] }
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("only one orchestrator");
+  });
+
+  it("rejects orchestrator role in sequential mode", () => {
+    const yaml = `
+name: bad-role
+version: "1.0"
+providers:
+  - openai
+stages:
+  s1:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    role: orchestrator
+    context: { read: [], write: [] }
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("sequential");
+  });
+
+  it("rejects invalid mode value", () => {
+    const yaml = `
+name: bad-mode
+version: "1.0"
+mode: invalid
+providers:
+  - openai
+stages:
+  s1:
+    provider: openai
+    model: gpt-4o
+    skill: s@1
+    context: { read: [], write: [] }
+`;
+    const result = parsePipelineFromString(yaml);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("invalid");
+  });
 });

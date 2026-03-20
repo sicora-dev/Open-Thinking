@@ -39,16 +39,21 @@ function mockProvider(content: string): LLMProvider {
   };
 }
 
-function makePipelineConfig(stages: Record<string, StageDefinition>): PipelineConfig {
+function makePipelineConfig(
+  stages: Record<string, StageDefinition>,
+  overrides?: Partial<PipelineConfig>,
+): PipelineConfig {
   return {
     name: "test-pipeline",
     version: "1.0.0",
+    mode: "sequential",
     context: { backend: "sqlite", vector: "embedded", ttl: "7d" },
     providers: {
       mock: { type: "openai-compatible", base_url: "http://localhost" },
     },
     stages,
     policies: { global: {} },
+    ...overrides,
   };
 }
 
@@ -381,6 +386,120 @@ describe("executePipeline", () => {
     // Each stage: 30 total tokens
     expect(result.value.totalTokens.totalTokens).toBe(60);
     expect(result.value.totalCost).toBeGreaterThan(0);
+
+    store.close();
+  });
+});
+
+// ─── Orchestrated mode ────────────────────────────────────
+
+describe("executePipeline (orchestrated)", () => {
+  let store: ReturnType<typeof createContextStore>;
+
+  beforeEach(() => {
+    store = createContextStore({ dbPath: ":memory:" });
+  });
+
+  test("runs orchestrator stage in orchestrated mode", async () => {
+    const provider = mockProvider("Orchestration complete");
+    const config = makePipelineConfig(
+      {
+        orchestrator: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/orchestrator",
+          role: "orchestrator",
+          context: { read: ["*"], write: ["orchestrator.*"] },
+        },
+        coder: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/coder",
+          context: { read: ["*"], write: ["coder.*"] },
+        },
+      },
+      { mode: "orchestrated" },
+    );
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    const result = await executePipeline(deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Only the orchestrator runs directly — coder is available via delegate
+    expect(result.value.stages).toHaveLength(1);
+    expect(result.value.stages[0].stageName).toBe("orchestrator");
+    expect(result.value.stages[0].status).toBe("success");
+
+    store.close();
+  });
+
+  test("orchestrator receives delegate tool in its definitions", async () => {
+    let receivedTools: string[] = [];
+    const provider: LLMProvider = {
+      ...mockProvider("done"),
+      chat: mock((req) => {
+        const request = req as { tools?: Array<{ name: string }> };
+        receivedTools = (request.tools ?? []).map((t) => t.name);
+        return Promise.resolve(
+          ok({
+            id: "1",
+            model: "m",
+            content: "done",
+            usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+            finishReason: "stop" as const,
+          }),
+        );
+      }),
+    };
+
+    const config = makePipelineConfig(
+      {
+        orchestrator: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/orchestrator",
+          role: "orchestrator",
+          context: { read: ["*"], write: ["orchestrator.*"] },
+        },
+        agent1: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/agent",
+          context: { read: [], write: ["agent1.*"] },
+        },
+      },
+      { mode: "orchestrated" },
+    );
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    await executePipeline(deps);
+
+    expect(receivedTools).toContain("delegate");
+
+    store.close();
+  });
+
+  test("sequential mode still works (regression)", async () => {
+    const provider = mockProvider("output");
+    const config = makePipelineConfig({
+      s1: {
+        provider: "mock",
+        model: "m",
+        skill: "s",
+        context: { read: [], write: ["s1.*"] },
+      },
+    });
+    // mode defaults to "sequential"
+    expect(config.mode).toBe("sequential");
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    const result = await executePipeline(deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.status).toBe("success");
 
     store.close();
   });

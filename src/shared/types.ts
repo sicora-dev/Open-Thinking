@@ -5,9 +5,13 @@
 
 // ─── Pipeline Config ─────────────────────────────────────────
 
+export type PipelineMode = "sequential" | "orchestrated";
+
 export type PipelineConfig = {
   name: string;
   version: string;
+  /** Execution mode. "sequential" = static DAG, "orchestrated" = LLM-driven routing. Default: "sequential". */
+  mode: PipelineMode;
   context: ContextConfig;
   /** Resolved providers keyed by provider ID (e.g., "openai", "anthropic"). */
   providers: Record<string, ResolvedProvider>;
@@ -61,6 +65,10 @@ export type StageDefinition = {
    * Example: ["read_file", "list_files", "search_files"] for read-only stages.
    */
   allowed_tools?: string[];
+  /** Timeout in seconds for each LLM request in this stage. Default: 120. */
+  timeout?: number;
+  /** Stage role. "orchestrator" marks this stage as the orchestrator in orchestrated mode. */
+  role?: "orchestrator";
   on_fail?: FailureConfig;
 };
 
@@ -110,6 +118,8 @@ export type ChatRequest = {
   stream?: boolean;
   /** Abort signal for cancellation support. */
   signal?: AbortSignal;
+  /** Override the provider's default timeout (in milliseconds). */
+  timeoutMs?: number;
 };
 
 export type ChatResponse = {
@@ -253,4 +263,7 @@ export type PipelineEvent =
       toolName: string;
       durationMs: number;
       success: boolean;
-    };
+    }
+  | { type: "delegate:start"; agentName: string; task: string; model: string }
+  | { type: "delegate:complete"; agentName: string; result: StageResult; durationMs: number }
+  | { type: "delegate:error"; agentName: string; error: string };

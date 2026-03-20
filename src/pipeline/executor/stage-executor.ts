@@ -21,9 +21,9 @@ import type {
   StageResult,
   TokenUsage,
 } from "../../shared/types";
-import { createToolRegistry } from "../../tools";
+import { createDelegateTool, createToolRegistry } from "../../tools";
 import { formatPersistentContext, loadStageContext } from "../../workspace";
-import { runAgentLoop } from "./agent-loop";
+import { type AgentLoopConfig, type AgentLoopResult, runAgentLoop } from "./agent-loop";
 
 export type ExecutorDeps = {
   config: PipelineConfig;
@@ -302,6 +302,7 @@ async function executeStage(
     maxTokens: stageDef.max_tokens ?? 16384,
     temperature: stageDef.temperature,
     tools: toolRegistry.definitions(),
+    timeoutMs: stageDef.timeout ? stageDef.timeout * 1000 : undefined,
   };
 
   // Run agent loop (iterates: chat -> tool calls -> chat -> ... -> stop)
@@ -421,9 +422,189 @@ async function executeStageWithRetry(
 }
 
 /**
+ * Execute an orchestrated pipeline: run only the orchestrator stage,
+ * which delegates to other agents via the `delegate` tool.
+ */
+async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineRunResult>> {
+  const { config, eventBus } = deps;
+  const runId = crypto.randomUUID();
+  const start = Date.now();
+
+  eventBus.emit({ type: "pipeline:start", pipelineName: config.name, runId });
+
+  // Find the orchestrator stage
+  const orchestratorEntry = Object.entries(config.stages).find(
+    ([, s]) => s.role === "orchestrator",
+  );
+  if (!orchestratorEntry) {
+    return err(new ProviderError("No orchestrator stage found", "NOT_FOUND"));
+  }
+
+  const [orchestratorName, orchestratorDef] = orchestratorEntry;
+
+  // Create the delegate tool with access to all deps
+  const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
+  const delegateTool = createDelegateTool({
+    config,
+    providers: deps.providers,
+    contextStore: deps.contextStore,
+    policyEngine: deps.policyEngine,
+    eventBus,
+    workingDir: deps.workingDir,
+    skillsDir,
+    signal: deps.signal,
+    onTokenLimit: deps.onTokenLimit,
+    runAgentLoop,
+  });
+
+  // Execute the orchestrator stage with the delegate tool injected
+  const result = await executeStageWithDelegateTool(
+    orchestratorName,
+    orchestratorDef,
+    deps,
+    delegateTool,
+  );
+
+  const totalTokens: TokenUsage = {
+    promptTokens: result.usage?.promptTokens ?? 0,
+    completionTokens: result.usage?.completionTokens ?? 0,
+    totalTokens: result.usage?.totalTokens ?? 0,
+  };
+
+  const pipelineResult: PipelineRunResult = {
+    pipelineName: config.name,
+    runId,
+    status: result.status === "success" ? "success" : "failed",
+    stages: [result],
+    totalDurationMs: Date.now() - start,
+    totalCost: result.cost ?? 0,
+    totalTokens,
+  };
+
+  eventBus.emit({ type: "pipeline:complete", result: pipelineResult });
+  return ok(pipelineResult);
+}
+
+/**
+ * Execute a stage with an additional tool (delegate) injected into its registry.
+ */
+async function executeStageWithDelegateTool(
+  stageName: string,
+  stageDef: StageDefinition,
+  deps: ExecutorDeps,
+  delegateTool: import("../../shared/types").ToolFunction,
+): Promise<StageResult> {
+  const start = Date.now();
+  const { providers, contextStore, policyEngine, eventBus } = deps;
+
+  if (deps.signal?.aborted) {
+    return { stageName, status: "cancelled", durationMs: 0, contextKeysWritten: [] };
+  }
+
+  const provider = providers[stageDef.provider];
+  if (!provider) {
+    return { stageName, status: "failed", durationMs: Date.now() - start, error: `Provider "${stageDef.provider}" not found`, contextKeysWritten: [] };
+  }
+
+  eventBus.emit({ type: "stage:start", stageName, model: stageDef.model });
+
+  // Build context
+  const contextResult = await buildContextPayload(stageName, stageDef.context, contextStore, policyEngine, eventBus);
+  if (!contextResult.ok) {
+    eventBus.emit({ type: "stage:error", stageName, error: contextResult.error.message });
+    return { stageName, status: "failed", durationMs: Date.now() - start, error: contextResult.error.message, contextKeysWritten: [] };
+  }
+
+  const contextBlock = formatContextForPrompt(contextResult.value);
+
+  // Load skill + build tool registry with delegate injected
+  const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
+  const skill = loadSkill(stageDef.skill, skillsDir);
+  const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
+  const toolRegistry = createToolRegistry(process.cwd(), allowedTools);
+
+  // Inject delegate tool — the orchestrator always gets it regardless of allowed_tools
+  const augmentedRegistry = {
+    definitions: () => [...toolRegistry.definitions(), { name: delegateTool.name, description: delegateTool.description, parameters: delegateTool.parameters }],
+    execute: async (name: string, args: Record<string, unknown>) => {
+      if (name === "delegate") return delegateTool.execute(args).then((r) => r.ok ? ok(typeof r.value === "string" ? r.value : JSON.stringify(r.value)) : err(r.error));
+      return toolRegistry.execute(name, args);
+    },
+  };
+
+  // Build system prompt with persistent context
+  const persistentCtx = loadStageContext(deps.workingDir, stageName);
+  const persistentBlock = formatPersistentContext(persistentCtx);
+  const basePrompt = skill.prompt ?? `You are the "${stageName}" orchestrator in an AI pipeline.`;
+  const systemPrompt = persistentBlock ? `${basePrompt}\n\n--- Persistent Context ---\n${persistentBlock}` : basePrompt;
+
+  const request: ChatRequest = {
+    model: stageDef.model,
+    messages: [{
+      role: "user",
+      content: contextBlock ? `Complete your task based on the following context.${contextBlock}` : "Complete your task.",
+    }],
+    systemPrompt,
+    maxTokens: stageDef.max_tokens ?? 16384,
+    temperature: stageDef.temperature,
+    tools: augmentedRegistry.definitions(),
+    timeoutMs: stageDef.timeout ? stageDef.timeout * 1000 : undefined,
+  };
+
+  const maxIterations = stageDef.max_iterations ?? 100;
+  const loopResult = await runAgentLoop({
+    provider,
+    request,
+    toolRegistry: augmentedRegistry,
+    maxIterations,
+    eventBus,
+    stageName,
+    signal: deps.signal,
+    onTokenLimit: deps.onTokenLimit ? (summary) => deps.onTokenLimit!(stageName, summary) : undefined,
+  });
+
+  if (!loopResult.ok) {
+    eventBus.emit({ type: "stage:error", stageName, error: loopResult.error.message });
+    return { stageName, status: "failed", durationMs: Date.now() - start, error: loopResult.error.message, contextKeysWritten: [] };
+  }
+
+  const agentResult = loopResult.value;
+  const cost = estimateCost(agentResult.totalUsage);
+  const costCheck = policyEngine.recordCost(cost, stageName);
+  if (!costCheck.ok) {
+    eventBus.emit({ type: "stage:error", stageName, error: costCheck.error.message });
+    return { stageName, status: "failed", durationMs: Date.now() - start, error: costCheck.error.message, usage: agentResult.totalUsage, cost, contextKeysWritten: [] };
+  }
+
+  // Write orchestrator output to context
+  const writeResult = await writeStageOutput(stageName, stageDef.context, agentResult.finalContent, contextStore, policyEngine, eventBus);
+  const contextKeysWritten = writeResult.ok ? writeResult.value : [];
+
+  const result: StageResult = {
+    stageName,
+    status: "success",
+    output: agentResult.finalContent,
+    usage: agentResult.totalUsage,
+    cost,
+    durationMs: Date.now() - start,
+    contextKeysWritten,
+    stopReason: agentResult.stopReason,
+    workSummary: agentResult.workSummary,
+  };
+
+  eventBus.emit({ type: "stage:complete", result });
+  return result;
+}
+
+/**
  * Execute an entire pipeline: resolve DAG, run stages layer by layer.
  */
 export async function executePipeline(deps: ExecutorDeps): Promise<Result<PipelineRunResult>> {
+  // Route to orchestrated execution if mode is "orchestrated"
+  if (deps.config.mode === "orchestrated") {
+    return executeOrchestrated(deps);
+  }
+
   const { config, eventBus } = deps;
   const runId = crypto.randomUUID();
   const start = Date.now();
@@ -440,7 +621,6 @@ export async function executePipeline(deps: ExecutorDeps): Promise<Result<Pipeli
 
   for (const layer of layers) {
     if (pipelineFailed || deps.signal?.aborted) {
-      // Skip remaining stages
       for (const name of layer) {
         stageResults.push({
           stageName: name,
@@ -452,7 +632,6 @@ export async function executePipeline(deps: ExecutorDeps): Promise<Result<Pipeli
       continue;
     }
 
-    // Run stages in the layer in parallel
     const layerResults = await Promise.all(
       layer.map((name) => {
         const stageDef = config.stages[name] as StageDefinition;
@@ -462,7 +641,6 @@ export async function executePipeline(deps: ExecutorDeps): Promise<Result<Pipeli
 
     stageResults.push(...layerResults);
 
-    // Check if any stage in this layer failed
     if (layerResults.some((r) => r.status === "failed")) {
       pipelineFailed = true;
     }
