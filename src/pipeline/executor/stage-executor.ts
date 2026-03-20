@@ -22,6 +22,7 @@ import type {
   TokenUsage,
 } from "../../shared/types";
 import { createToolRegistry } from "../../tools";
+import { formatPersistentContext, loadStageContext } from "../../workspace";
 import { runAgentLoop } from "./agent-loop";
 
 export type ExecutorDeps = {
@@ -30,6 +31,8 @@ export type ExecutorDeps = {
   contextStore: ContextStore;
   policyEngine: PolicyEngine;
   eventBus: EventBus;
+  /** Working directory of the project. Used for persistent context (.openmind/). */
+  workingDir: string;
   /** Base directory for resolving skill paths. Defaults to cwd. */
   skillsDir?: string;
   /** Abort signal for cancellation support. */
@@ -276,8 +279,15 @@ async function executeStage(
   const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
   const toolRegistry = createToolRegistry(process.cwd(), allowedTools);
 
-  // Build chat request
-  const systemPrompt = skill.prompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
+  // Build chat request — inject persistent context (project soul, user prefs, etc.)
+  const persistentCtx = loadStageContext(deps.workingDir, stageName);
+  const persistentBlock = formatPersistentContext(persistentCtx);
+
+  const basePrompt = skill.prompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
+  const systemPrompt = persistentBlock
+    ? `${basePrompt}\n\n--- Persistent Context ---\n${persistentBlock}`
+    : basePrompt;
+
   const request: ChatRequest = {
     model: stageDef.model,
     messages: [

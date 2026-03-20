@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
@@ -63,6 +66,7 @@ function makeDeps(
     contextStore: store,
     policyEngine: policyResult.value,
     eventBus: createEventBus(),
+    workingDir: mkdtempSync(join(tmpdir(), "openmind-test-")),
   };
 }
 

@@ -6,7 +6,18 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
 import { parsePipeline } from "../../pipeline/parser";
-import type { PipelineConfig } from "../../shared/types";
+import type { PipelineConfig, StageDefinition } from "../../shared/types";
+import {
+  type PipelineOrigin,
+  clearPipelineDefault,
+  findPipelineConflicts,
+  getActivePipelineName,
+  listAvailablePipelines,
+  resolvePipelinePath,
+  setActivePipeline,
+  setPipelineDefault,
+} from "../../workspace";
+import { resolveExecutionOrder } from "../../pipeline/executor";
 
 export type ReplState = {
   pipelineConfig: PipelineConfig | null;
@@ -28,6 +39,84 @@ type SlashCommand = {
   usage?: string;
   execute: (args: string, state: ReplState) => Promise<SlashCommandResult>;
 };
+
+/**
+ * Format a full visual view of the pipeline design.
+ */
+function formatPipelineView(cfg: PipelineConfig, state: ReplState): string {
+  const lines: string[] = [];
+  const activeName = getActivePipelineName(state.workingDir);
+
+  // Header
+  lines.push(`  ${cfg.name} v${cfg.version}`);
+  if (state.pipelinePath) lines.push(`  ${state.pipelinePath}`);
+  if (activeName) lines.push(`  Active as: ${activeName}`);
+  lines.push("");
+
+  // Providers
+  const providerIds = Object.keys(cfg.providers);
+  lines.push(`  Providers (${providerIds.length})`);
+  for (const id of providerIds) {
+    const p = cfg.providers[id]!;
+    const keyStatus = p.api_key ? "key set" : "no key";
+    lines.push(`    ${id}  ${p.type}  ${p.base_url}  (${keyStatus})`);
+  }
+  lines.push("");
+
+  // Execution order (DAG layers)
+  const orderResult = resolveExecutionOrder(cfg.stages);
+  if (orderResult.ok) {
+    const layers = orderResult.value;
+    lines.push(`  Execution order (${layers.length} layer${layers.length !== 1 ? "s" : ""})`);
+    for (const [i, layer] of layers.entries()) {
+      const parallel = layer.length > 1 ? " (parallel)" : "";
+      lines.push(`    ${i + 1}. ${layer.join(", ")}${parallel}`);
+    }
+    lines.push("");
+  }
+
+  // Stages detail
+  lines.push("  Stages");
+  for (const [name, stage] of Object.entries(cfg.stages)) {
+    lines.push(`    ${name}`);
+    lines.push(`      model:    ${stage.model} (via ${stage.provider})`);
+    lines.push(`      skill:    ${stage.skill}`);
+
+    if (stage.depends_on?.length) {
+      lines.push(`      depends:  ${stage.depends_on.join(", ")}`);
+    }
+
+    const reads = stage.context.read.length > 0 ? stage.context.read.join(", ") : "none";
+    const writes = stage.context.write.length > 0 ? stage.context.write.join(", ") : "none";
+    lines.push(`      reads:    ${reads}`);
+    lines.push(`      writes:   ${writes}`);
+
+    if (stage.allowed_tools?.length) {
+      lines.push(`      tools:    ${stage.allowed_tools.join(", ")}`);
+    }
+
+    if (stage.max_tokens) lines.push(`      tokens:   ${stage.max_tokens}`);
+    if (stage.temperature !== undefined) lines.push(`      temp:     ${stage.temperature}`);
+    if (stage.max_iterations) lines.push(`      max iter: ${stage.max_iterations}`);
+
+    if (stage.on_fail) {
+      lines.push(`      on_fail:  retry ${stage.on_fail.retry_stage} (max ${stage.on_fail.max_retries})`);
+    }
+    lines.push("");
+  }
+
+  // Policies
+  const pol = cfg.policies.global;
+  const policyParts: string[] = [];
+  if (pol.rate_limit) policyParts.push(`rate: ${pol.rate_limit}`);
+  if (pol.cost_limit) policyParts.push(`cost: ${pol.cost_limit}`);
+  if (pol.audit_log) policyParts.push("audit: on");
+  if (policyParts.length > 0) {
+    lines.push(`  Policies: ${policyParts.join("  ")}`);
+  }
+
+  return lines.join("\n");
+}
 
 const commands: SlashCommand[] = [
   {
@@ -51,34 +140,129 @@ const commands: SlashCommand[] = [
   {
     name: "pipeline",
     aliases: ["p"],
-    description: "Show or load a pipeline configuration",
-    usage: "[path]",
+    description: "Manage pipelines: show, list, switch, default, or load from path",
+    usage: "[list|switch <name>|default <name> <project|user|clear>|<path>]",
     async execute(args, state) {
-      if (!args) {
+      const parts = args.trim().split(/\s+/);
+      const subcommand = parts[0] || "";
+
+      // /pipeline — show full pipeline design
+      if (!subcommand) {
         if (!state.pipelineConfig) {
-          return { output: "  No pipeline loaded. Use /pipeline <path> to load one." };
+          return { output: "  No pipeline loaded. Use /pipeline list or /pipeline <path>." };
         }
-        const cfg = state.pipelineConfig;
-        const stageNames = Object.keys(cfg.stages).join(", ");
-        const providerNames = Object.keys(cfg.providers).join(", ");
+        return { output: formatPipelineView(state.pipelineConfig, state) };
+      }
+
+      // /pipeline list
+      if (subcommand === "list" || subcommand === "ls") {
+        const pipelines = listAvailablePipelines(state.workingDir);
+        if (pipelines.length === 0) {
+          return {
+            output:
+              "  No pipelines found.\n" +
+              "  Place YAML files in .openmind/pipelines/ (project) or ~/.openmind/pipelines/ (personal).",
+          };
+        }
+
+        const activeName = getActivePipelineName(state.workingDir);
+        const lines = pipelines.map((p) => {
+          const isActive = activeName === p.name && state.pipelineConfig ? "●" : " ";
+          const origin = p.origin === "project" ? "[project]" : "[user]";
+          return `    ${isActive} ${p.name}  ${origin}  ${p.path}`;
+        });
+
+        // Detect conflicts
+        const names = pipelines.map((p) => p.name);
+        const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
+        const conflictWarnings = [...new Set(duplicates)].map(
+          (n) => `  ⚠ "${n}" exists in both project and user. Use /pipeline default ${n} <project|user> to set preference.`,
+        );
+
         return {
           output: [
-            `  Pipeline: ${cfg.name} v${cfg.version}`,
-            `  File: ${state.pipelinePath}`,
-            `  Providers: ${providerNames}`,
-            `  Stages: ${stageNames}`,
+            "  Available pipelines:\n",
+            ...lines,
+            ...(conflictWarnings.length > 0 ? ["", ...conflictWarnings] : []),
           ].join("\n"),
         };
       }
 
+      // /pipeline switch <name>
+      if (subcommand === "switch" || subcommand === "sw") {
+        const name = parts[1];
+        if (!name) return { output: "  Usage: /pipeline switch <name>" };
+
+        const resolved = resolvePipelinePath(state.workingDir, name);
+
+        if (resolved === null) {
+          return { output: `  Pipeline "${name}" not found. Use /pipeline list to see available pipelines.` };
+        }
+
+        if ("conflict" in resolved) {
+          const entries = resolved.conflict;
+          const lines = entries.map((e) => `    - ${e.origin}: ${e.path}`);
+          return {
+            output: [
+              `  ⚠ Found two pipelines named "${name}":`,
+              ...lines,
+              "",
+              `  Set a default first: /pipeline default ${name} project`,
+              `  Or: /pipeline default ${name} user`,
+            ].join("\n"),
+          };
+        }
+
+        const result = await parsePipeline(resolved.path);
+        if (!result.ok) {
+          return { output: `  Error loading pipeline: ${result.error.message}` };
+        }
+
+        setActivePipeline(state.workingDir, name);
+
+        return {
+          output: `  Switched to pipeline: ${result.value.name} v${result.value.version} [${resolved.origin}]`,
+          stateUpdates: {
+            pipelineConfig: result.value,
+            pipelinePath: resolved.path,
+          },
+        };
+      }
+
+      // /pipeline default <name> <project|user|clear>
+      if (subcommand === "default" || subcommand === "def") {
+        const name = parts[1];
+        const action = parts[2];
+        if (!name || !action) {
+          return { output: "  Usage: /pipeline default <name> <project|user|clear>" };
+        }
+
+        if (action === "clear") {
+          clearPipelineDefault(state.workingDir, name);
+          return { output: `  Cleared default for "${name}". Will ask next time there's a conflict.` };
+        }
+
+        if (action !== "project" && action !== "user") {
+          return { output: `  Invalid origin: "${action}". Use project, user, or clear.` };
+        }
+
+        setPipelineDefault(state.workingDir, name, action as PipelineOrigin);
+        return { output: `  Default for "${name}" set to [${action}] in this project.` };
+      }
+
+      // /pipeline <path> — load from arbitrary file (temporary, no active-pipeline update)
       const filePath = resolve(state.workingDir, args.trim());
+      if (!existsSync(filePath)) {
+        return { output: `  File not found: ${filePath}\n  Use /pipeline list to see available pipelines.` };
+      }
+
       const result = await parsePipeline(filePath);
       if (!result.ok) {
         return { output: `  Error loading pipeline: ${result.error.message}` };
       }
 
       return {
-        output: `  Loaded pipeline: ${result.value.name} v${result.value.version}`,
+        output: `  Loaded pipeline: ${result.value.name} v${result.value.version} (temporary — not saved as active)`,
         stateUpdates: {
           pipelineConfig: result.value,
           pipelinePath: filePath,

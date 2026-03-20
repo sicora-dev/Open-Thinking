@@ -140,6 +140,7 @@ export function registerRunCommand(program: Command): void {
         contextStore,
         policyEngine: policyResult.value,
         eventBus,
+        workingDir: process.cwd(),
         skillsDir,
       });
 

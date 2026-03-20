@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 /**
  * Interactive REPL shell for OpenMind.
  * Opens when you run `openmind` — like Claude Code or Codex.
@@ -13,6 +13,19 @@ import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
 import type { LLMProvider } from "../../shared/types";
+import {
+  ensureGlobalWorkspace,
+  getActivePipelineName,
+  getProjectDir,
+  hasProjectWorkspace,
+  initProjectWorkspace,
+  listAvailablePipelines,
+  purgeOldHistory,
+  readProjectSoul,
+  resolvePipelinePath,
+  setActivePipeline,
+  writeHistoryEntry,
+} from "../../workspace";
 import { type ReplState, executeSlashCommand, getCommandCompletions } from "./slash-commands";
 
 const VERSION = "0.1.0";
@@ -33,7 +46,7 @@ function c(color: keyof typeof COLORS, text: string): string {
   return `${COLORS[color]}${text}${COLORS.reset}`;
 }
 
-function printBanner(state: ReplState, globalProviderCount = 0): void {
+function printBanner(state: ReplState, globalProviderCount = 0, hasWorkspace = false): void {
   console.log();
   console.log(`  ${c("bold", c("cyan", `OpenMind v${VERSION}`))}`);
   console.log(`  ${c("dim", "AI Pipeline Orchestrator")}`);
@@ -47,6 +60,12 @@ function printBanner(state: ReplState, globalProviderCount = 0): void {
     console.log(
       `  ${c("yellow", "○")} No providers configured ${c("dim", "— run /providers setup")}`,
     );
+  }
+
+  if (hasWorkspace) {
+    const soul = readProjectSoul(state.workingDir);
+    const soulStatus = soul ? c("green", "●") : c("dim", "○");
+    console.log(`  ${soulStatus} Project workspace ${c("dim", "(.openmind/)")}`);
   }
 
   if (state.pipelineConfig) {
@@ -67,9 +86,50 @@ function printBanner(state: ReplState, globalProviderCount = 0): void {
 }
 
 /**
- * Auto-detect pipeline YAML in the working directory.
+ * Resolve which pipeline to load on startup.
+ *
+ * Resolution order:
+ * 1. active-pipeline file → load that pipeline by name
+ * 2. Single pipeline available → use it and set as active
+ * 3. Multiple pipelines → don't auto-pick, let user choose
+ * 4. Fallback: auto-detect *.pipeline.yaml in working directory (backward compat)
+ * 5. Nothing found → no pipeline loaded
  */
-async function autoDetectPipeline(workingDir: string): Promise<Partial<ReplState>> {
+async function resolvePipelineOnStartup(workingDir: string): Promise<Partial<ReplState>> {
+  // 1. Check active-pipeline pointer
+  const activeName = getActivePipelineName(workingDir);
+  if (activeName) {
+    const resolved = resolvePipelinePath(workingDir, activeName);
+    if (resolved && !("conflict" in resolved)) {
+      const result = await parsePipeline(resolved.path);
+      if (result.ok) {
+        return { pipelineConfig: result.value, pipelinePath: resolved.path };
+      }
+    }
+    // If conflict or parse error, fall through
+  }
+
+  // 2. Check available pipelines in registry
+  const available = listAvailablePipelines(workingDir);
+  const uniqueNames = [...new Set(available.map((p) => p.name))];
+
+  if (uniqueNames.length === 1 && available.length === 1) {
+    // Single pipeline — use it and set as active
+    const entry = available[0]!;
+    const result = await parsePipeline(entry.path);
+    if (result.ok) {
+      setActivePipeline(workingDir, entry.name);
+      return { pipelineConfig: result.value, pipelinePath: entry.path };
+    }
+  }
+
+  if (available.length > 1) {
+    // Multiple pipelines — show hint, let user choose
+    console.log(`  ${c("dim", `${available.length} pipelines available — use /pipeline list to choose`)}`);
+    return {};
+  }
+
+  // 3. Fallback: auto-detect YAML in working directory (backward compat)
   const candidates = [
     "openmind.pipeline.yaml",
     "openmind.pipeline.yml",
@@ -82,10 +142,7 @@ async function autoDetectPipeline(workingDir: string): Promise<Partial<ReplState
     if (existsSync(filePath)) {
       const result = await parsePipeline(filePath);
       if (result.ok) {
-        return {
-          pipelineConfig: result.value,
-          pipelinePath: filePath,
-        };
+        return { pipelineConfig: result.value, pipelinePath: filePath };
       }
     }
   }
@@ -146,8 +203,11 @@ async function executePipelinePrompt(
     return;
   }
 
-  // Create context store and event bus
-  const contextStore = createContextStore({ dbPath: ":memory:" });
+  // Create context store (disk-backed if workspace exists, else in-memory) and event bus
+  const dbPath = hasProjectWorkspace(state.workingDir)
+    ? join(getProjectDir(state.workingDir), "context.db")
+    : ":memory:";
+  const contextStore = createContextStore({ dbPath });
   const eventBus = createEventBus();
 
   // Seed user input
@@ -263,12 +323,35 @@ async function executePipelinePrompt(
     contextStore,
     policyEngine: policyResult.value,
     eventBus,
+    workingDir: state.workingDir,
     skillsDir,
     signal: abortController?.signal,
     onTokenLimit,
   });
 
   contextStore.close();
+
+  // Write execution history if workspace exists
+  if (result.ok && hasProjectWorkspace(state.workingDir)) {
+    const run = result.value;
+    const stageSummaries = run.stages
+      .map((s) => {
+        const status = s.status === "success" ? "OK" : s.status;
+        const files = s.workSummary?.filesWritten.length ?? 0;
+        return `- **${s.stageName}**: ${status}${files > 0 ? ` (${files} files)` : ""}`;
+      })
+      .join("\n");
+
+    const historyContent =
+      `# Pipeline: ${run.pipelineName}\n` +
+      `**Status**: ${run.status}\n` +
+      `**Duration**: ${run.totalDurationMs}ms\n` +
+      `**Tokens**: ${run.totalTokens.totalTokens}\n` +
+      `**Prompt**: ${input.slice(0, 200)}${input.length > 200 ? "..." : ""}\n\n` +
+      `## Stages\n${stageSummaries}\n`;
+
+    writeHistoryEntry(state.workingDir, historyContent);
+  }
 
   if (!result.ok) {
     if (abortController?.signal.aborted) {
@@ -320,16 +403,26 @@ export async function startRepl(workingDir?: string): Promise<void> {
     skillsDir: null,
   };
 
-  // First-run: prompt for provider setup if no keys configured
+  // First-run: ensure global ~/.openmind/ exists
+  ensureGlobalWorkspace();
   await checkFirstRun();
 
-  // Auto-detect pipeline
-  const detected = await autoDetectPipeline(cwd);
+  // Resolve which pipeline to load
+  const detected = await resolvePipelineOnStartup(cwd);
   Object.assign(state, detected);
+
+  if (state.pipelineConfig && !hasProjectWorkspace(cwd)) {
+    initProjectWorkspace(cwd);
+  }
+
+  // Purge old history entries (>30 days)
+  if (hasProjectWorkspace(cwd)) {
+    purgeOldHistory(cwd);
+  }
 
   // Show configured providers count in banner
   const globalProviders = listProviders();
-  printBanner(state, globalProviders.length);
+  printBanner(state, globalProviders.length, hasProjectWorkspace(cwd));
 
   const completions = getCommandCompletions();
 
