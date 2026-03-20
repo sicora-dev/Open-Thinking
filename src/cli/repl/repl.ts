@@ -26,7 +26,8 @@ import {
   setActivePipeline,
   writeHistoryEntry,
 } from "../../workspace";
-import { type ReplState, executeSlashCommand, getCommandCompletions } from "./slash-commands";
+import { attachSlashCompletion, type KeypressEvent } from "./slash-completion";
+import { type ReplState, executeSlashCommand, getCommandCompletions, getCompletionEntries } from "./slash-commands";
 
 const VERSION = "0.1.0";
 
@@ -79,7 +80,7 @@ function printBanner(state: ReplState, globalProviderCount = 0, hasWorkspace = f
   } else {
     console.log(`  ${c("yellow", "○")} No pipeline loaded`);
     console.log(
-      `    Run ${c("dim", "/pipeline <path>")} to load one, or ${c("dim", "/help")} for commands`,
+      `    Run ${c("dim", "/pipeline add <path>")} to register one, or ${c("dim", "/help")} for commands`,
     );
   }
   console.log();
@@ -160,7 +161,7 @@ async function executePipelinePrompt(
 ): Promise<void> {
   if (!state.pipelineConfig) {
     console.log(
-      `\n  ${c("yellow", "No pipeline loaded.")} Use ${c("dim", "/pipeline <path>")} to load one.\n`,
+      `\n  ${c("yellow", "No pipeline loaded.")} Use ${c("dim", "/pipeline add <path>")} to register one.\n`,
     );
     return;
   }
@@ -450,6 +451,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
   printBanner(state, globalProviders.length, hasProjectWorkspace(cwd));
 
   const completions = getCommandCompletions();
+  const completionEntries = getCompletionEntries();
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -464,6 +466,22 @@ export async function startRepl(workingDir?: string): Promise<void> {
     },
     historySize: 200,
   });
+
+  // Attach interactive slash completion (renders filtered menu as you type)
+  const slashCompletion = attachSlashCompletion(rl, completionEntries);
+
+  // Intercept keypresses before readline processes them.
+  // Wrap _ttyWrite so we can consume keys (Tab, arrows) when the menu is active.
+  const rlAny = rl as unknown as {
+    _ttyWrite: (s: string | undefined, key: KeypressEvent) => void;
+  };
+  const originalTtyWrite = rlAny._ttyWrite.bind(rl);
+  rlAny._ttyWrite = (s: string | undefined, key: KeypressEvent) => {
+    const consumed = slashCompletion.handleKeypress(s, key);
+    if (!consumed) {
+      originalTtyWrite(s, key);
+    }
+  };
 
   rl.prompt();
 
@@ -521,6 +539,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
   });
 
   rl.on("close", async () => {
+    slashCompletion.destroy();
     // Wait for any pending commands to finish
     while (processing) {
       await new Promise((r) => setTimeout(r, 10));

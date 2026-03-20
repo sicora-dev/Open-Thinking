@@ -113,9 +113,14 @@ describe("Slash Commands", () => {
     expect(result.exit).toBe(true);
   });
 
-  test("/pipeline <path> shows error for nonexistent file", async () => {
-    const result = await executeSlashCommand("pipeline /nonexistent/file.yaml", baseState());
+  test("/pipeline load <path> shows error for nonexistent file", async () => {
+    const result = await executeSlashCommand("pipeline load /nonexistent/file.yaml", baseState());
     expect(result.output).toContain("File not found");
+  });
+
+  test("/pipeline unknown subcommand shows error", async () => {
+    const result = await executeSlashCommand("pipeline show", baseState());
+    expect(result.output).toContain("Unknown");
   });
 
   test("getCommandCompletions returns all commands", () => {

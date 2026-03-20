@@ -2,16 +2,21 @@
  * Slash command definitions and router for the interactive REPL.
  * Commands are prefixed with `/` and handle configuration, inspection, etc.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
 import { parsePipeline } from "../../pipeline/parser";
 import type { PipelineConfig, StageDefinition } from "../../shared/types";
 import {
+  type PipelineEntry,
   type PipelineOrigin,
   clearPipelineDefault,
   findPipelineConflicts,
   getActivePipelineName,
+  getGlobalDir,
+  getPipelineDefault,
+  getProjectDir,
+  initProjectWorkspace,
   listAvailablePipelines,
   resolvePipelinePath,
   setActivePipeline,
@@ -155,8 +160,8 @@ const commands: SlashCommand[] = [
   {
     name: "pipeline",
     aliases: ["p"],
-    description: "Manage pipelines: show, list, switch, default, or load from path",
-    usage: "[list|switch <name>|default <name> <project|user|clear>|<path>]",
+    description: "Manage pipelines: show, list, add, remove, switch, default",
+    usage: "[list|add <path> [project|user]|remove <name> [project|user]|switch <name>|default <name> <project|user|clear>|load <path>]",
     async execute(args, state) {
       const parts = args.trim().split(/\s+/);
       const subcommand = parts[0] || "";
@@ -164,7 +169,7 @@ const commands: SlashCommand[] = [
       // /pipeline — show full pipeline design
       if (!subcommand) {
         if (!state.pipelineConfig) {
-          return { output: "  No pipeline loaded. Use /pipeline list or /pipeline <path>." };
+          return { output: "  No pipeline loaded. Use /pipeline add <path> or /pipeline list." };
         }
         return { output: formatPipelineView(state.pipelineConfig, state) };
       }
@@ -176,30 +181,159 @@ const commands: SlashCommand[] = [
           return {
             output:
               "  No pipelines found.\n" +
-              "  Place YAML files in .openmind/pipelines/ (project) or ~/.openmind/pipelines/ (personal).",
+              "  Use /pipeline add <path> to register one.",
           };
         }
 
         const activeName = getActivePipelineName(state.workingDir);
-        const lines = pipelines.map((p) => {
+        const projectPipelines = pipelines.filter((p) => p.origin === "project");
+        const userPipelines = pipelines.filter((p) => p.origin === "user");
+
+        // Build default lookup: which names have a stored preference?
+        const allNames = [...new Set(pipelines.map((p) => p.name))];
+        const defaults = new Map<string, PipelineOrigin>();
+        for (const name of allNames) {
+          const pref = getPipelineDefault(state.workingDir, name);
+          if (pref) defaults.set(name, pref);
+        }
+
+        function formatEntry(p: PipelineEntry): string {
           const isActive = activeName === p.name && state.pipelineConfig ? "●" : " ";
-          const origin = p.origin === "project" ? "[project]" : "[user]";
-          return `    ${isActive} ${p.name}  ${origin}  ${p.path}`;
-        });
+          const isDefault = defaults.get(p.name) === p.origin ? " (default)" : "";
+          return `    ${isActive} ${p.name}${isDefault}`;
+        }
+
+        const lines: string[] = [];
+
+        if (projectPipelines.length > 0) {
+          lines.push("  Project (.openmind/pipelines/)");
+          for (const p of projectPipelines) lines.push(formatEntry(p));
+        }
+
+        if (userPipelines.length > 0) {
+          if (projectPipelines.length > 0) lines.push("");
+          lines.push("  User (~/.openmind/pipelines/)");
+          for (const p of userPipelines) lines.push(formatEntry(p));
+        }
 
         // Detect conflicts
         const names = pipelines.map((p) => p.name);
         const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
-        const conflictWarnings = [...new Set(duplicates)].map(
-          (n) => `  ⚠ "${n}" exists in both project and user. Use /pipeline default ${n} <project|user> to set preference.`,
-        );
+        const conflictWarnings = [...new Set(duplicates)]
+          .filter((n) => !defaults.has(n))
+          .map(
+            (n) => `  ⚠ "${n}" exists in both project and user. Use /pipeline default ${n} <project|user> to set preference.`,
+          );
 
         return {
           output: [
-            "  Available pipelines:\n",
             ...lines,
             ...(conflictWarnings.length > 0 ? ["", ...conflictWarnings] : []),
           ].join("\n"),
+        };
+      }
+
+      // /pipeline add <path> [project|user]
+      if (subcommand === "add") {
+        const rawPath = parts[1];
+        const target: PipelineOrigin = (parts[2] as PipelineOrigin) || "project";
+        if (!rawPath) {
+          return { output: "  Usage: /pipeline add <path> [project|user]" };
+        }
+        if (target !== "project" && target !== "user") {
+          return { output: `  Invalid target: "${target}". Use project or user.` };
+        }
+
+        const filePath = resolve(state.workingDir, rawPath);
+        if (!existsSync(filePath)) {
+          return { output: `  File not found: ${filePath}` };
+        }
+
+        // Validate it's a valid pipeline before copying
+        const parseResult = await parsePipeline(filePath);
+        if (!parseResult.ok) {
+          return { output: `  Invalid pipeline: ${parseResult.error.message}` };
+        }
+
+        // Determine destination directory
+        const destDir =
+          target === "project"
+            ? join(getProjectDir(state.workingDir), "pipelines")
+            : join(getGlobalDir(), "pipelines");
+
+        // Ensure target directories exist
+        if (target === "project") {
+          initProjectWorkspace(state.workingDir);
+        }
+
+        const fileName = basename(filePath);
+        const destPath = join(destDir, fileName);
+
+        if (existsSync(destPath)) {
+          return { output: `  Pipeline already exists: ${destPath}\n  Remove it first with /pipeline remove.` };
+        }
+
+        copyFileSync(filePath, destPath);
+
+        // Auto-load the pipeline and set it as active
+        setActivePipeline(state.workingDir, parseResult.value.name);
+
+        return {
+          output: `  Added "${parseResult.value.name}" to [${target}] and set as active.`,
+          stateUpdates: {
+            pipelineConfig: parseResult.value,
+            pipelinePath: destPath,
+          },
+        };
+      }
+
+      // /pipeline remove <name> [project|user]
+      if (subcommand === "remove" || subcommand === "rm") {
+        const name = parts[1];
+        const originFilter = parts[2] as PipelineOrigin | undefined;
+        if (!name) {
+          return { output: "  Usage: /pipeline remove <name> [project|user]" };
+        }
+
+        const entries = findPipelineConflicts(state.workingDir, name);
+        if (entries.length === 0) {
+          return { output: `  Pipeline "${name}" not found.` };
+        }
+
+        // If origin specified, filter to that
+        const toRemove = originFilter
+          ? entries.filter((e) => e.origin === originFilter)
+          : entries;
+
+        if (toRemove.length === 0) {
+          return { output: `  Pipeline "${name}" not found in [${originFilter}].` };
+        }
+
+        if (toRemove.length > 1 && !originFilter) {
+          return {
+            output: [
+              `  "${name}" exists in both project and user.`,
+              `  Specify which to remove: /pipeline remove ${name} project`,
+              `  Or: /pipeline remove ${name} user`,
+            ].join("\n"),
+          };
+        }
+
+        const entry = toRemove[0]!;
+        const { unlinkSync } = await import("node:fs");
+        unlinkSync(entry.path);
+
+        // If we removed the active pipeline, clear state
+        const activeName = getActivePipelineName(state.workingDir);
+        const stateUpdates: Partial<ReplState> = {};
+        if (activeName === name) {
+          stateUpdates.pipelineConfig = null;
+          stateUpdates.pipelinePath = null;
+        }
+
+        return {
+          output: `  Removed "${name}" from [${entry.origin}].`,
+          stateUpdates: Object.keys(stateUpdates).length > 0 ? stateUpdates : undefined,
         };
       }
 
@@ -249,7 +383,16 @@ const commands: SlashCommand[] = [
         const name = parts[1];
         const action = parts[2];
         if (!name || !action) {
-          return { output: "  Usage: /pipeline default <name> <project|user|clear>" };
+          return { output: "  Usage: /pipeline default <name> <project|user|clear>\n  Sets which origin to prefer when the same pipeline name exists in both project and user." };
+        }
+
+        // Validate the pipeline actually exists and has a conflict worth resolving
+        const entries = findPipelineConflicts(state.workingDir, name);
+        if (entries.length === 0) {
+          return { output: `  Pipeline "${name}" not found. Use /pipeline add <path> to register one.` };
+        }
+        if (entries.length < 2 && action !== "clear") {
+          return { output: `  "${name}" only exists in [${entries[0]!.origin}]. No conflict to resolve.` };
         }
 
         if (action === "clear") {
@@ -262,27 +405,36 @@ const commands: SlashCommand[] = [
         }
 
         setPipelineDefault(state.workingDir, name, action as PipelineOrigin);
-        return { output: `  Default for "${name}" set to [${action}] in this project.` };
+        return { output: `  Default for "${name}" set to [${action}].` };
       }
 
-      // /pipeline <path> — load from arbitrary file (temporary, no active-pipeline update)
-      const filePath = resolve(state.workingDir, args.trim());
-      if (!existsSync(filePath)) {
-        return { output: `  File not found: ${filePath}\n  Use /pipeline list to see available pipelines.` };
+      // /pipeline load <path> — load from arbitrary file (temporary, not registered)
+      if (subcommand === "load") {
+        const rawPath = parts.slice(1).join(" ");
+        if (!rawPath) {
+          return { output: "  Usage: /pipeline load <path>" };
+        }
+
+        const filePath = resolve(state.workingDir, rawPath);
+        if (!existsSync(filePath)) {
+          return { output: `  File not found: ${filePath}` };
+        }
+
+        const result = await parsePipeline(filePath);
+        if (!result.ok) {
+          return { output: `  Error loading pipeline: ${result.error.message}` };
+        }
+
+        return {
+          output: `  Loaded pipeline: ${result.value.name} v${result.value.version} (temporary — use /pipeline add to register)`,
+          stateUpdates: {
+            pipelineConfig: result.value,
+            pipelinePath: filePath,
+          },
+        };
       }
 
-      const result = await parsePipeline(filePath);
-      if (!result.ok) {
-        return { output: `  Error loading pipeline: ${result.error.message}` };
-      }
-
-      return {
-        output: `  Loaded pipeline: ${result.value.name} v${result.value.version} (temporary — not saved as active)`,
-        stateUpdates: {
-          pipelineConfig: result.value,
-          pipelinePath: filePath,
-        },
-      };
+      return { output: `  Unknown: /pipeline ${subcommand}. Type /help for usage.` };
     },
   },
   {
@@ -458,4 +610,27 @@ export function getCommandCompletions(): string[] {
     }
   }
   return completions;
+}
+
+export type CompletionEntry = {
+  /** The text to insert (e.g. "/providers") */
+  text: string;
+  /** Short description shown next to it */
+  description: string;
+  /** If this is an alias, which command it aliases */
+  aliasOf?: string;
+};
+
+/**
+ * Get rich completion entries for the interactive autocomplete menu.
+ */
+export function getCompletionEntries(): CompletionEntry[] {
+  const entries: CompletionEntry[] = [];
+  for (const cmd of commands) {
+    entries.push({ text: `/${cmd.name}`, description: cmd.description });
+    for (const alias of cmd.aliases) {
+      entries.push({ text: `/${alias}`, description: cmd.description, aliasOf: cmd.name });
+    }
+  }
+  return entries;
 }
