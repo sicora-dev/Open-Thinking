@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ChatRequest, LLMProvider } from "../../shared/types";
-import { createOpenAICompatibleAdapter } from "./openai-compatible-adapter";
+import { createAdapter } from "./base-adapter";
+import { defaultProtocol } from "./customizations";
+import { openaiProtocol } from "./customizations";
+import { anthropicProtocol } from "./customizations";
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -20,14 +23,15 @@ function restoreFetch() {
   globalThis.fetch = originalFetch;
 }
 
-describe("OpenAI Compatible Adapter", () => {
+describe("Base Adapter", () => {
   let adapter: LLMProvider;
 
   beforeEach(() => {
-    adapter = createOpenAICompatibleAdapter({
+    adapter = createAdapter({
       name: "test-provider",
       baseUrl: "https://api.test.com/v1",
       apiKey: "test-key",
+      protocol: defaultProtocol,
     });
   });
 
@@ -74,7 +78,7 @@ describe("OpenAI Compatible Adapter", () => {
 
     test("includes system prompt in messages", async () => {
       let capturedBody = "";
-      globalThis.fetch = mock((url: string, init: RequestInit) => {
+      globalThis.fetch = mock((_url: string, init: RequestInit) => {
         capturedBody = init.body as string;
         return Promise.resolve({
           ok: true,
@@ -169,7 +173,7 @@ describe("OpenAI Compatible Adapter", () => {
       expect(result.value.toolCalls?.[0].function.name).toBe("get_weather");
     });
 
-    test("sends authorization header", async () => {
+    test("sends authorization header via protocol", async () => {
       let capturedHeaders: Record<string, string> = {};
       globalThis.fetch = mock((_url: string, init: RequestInit) => {
         capturedHeaders = init.headers as Record<string, string>;
@@ -227,5 +231,185 @@ describe("OpenAI Compatible Adapter", () => {
       expect(result.value[0].id).toBe("gpt-4");
       expect(result.value[0].provider).toBe("test-provider");
     });
+  });
+});
+
+describe("OpenAI Protocol", () => {
+  afterEach(() => {
+    restoreFetch();
+  });
+
+  test("uses max_completion_tokens instead of max_tokens", async () => {
+    const adapter = createAdapter({
+      name: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "test-key",
+      protocol: openaiProtocol,
+    });
+
+    let capturedBody = "";
+    globalThis.fetch = mock((_url: string, init: RequestInit) => {
+      capturedBody = init.body as string;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "test",
+          model: "gpt-5",
+          choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }),
+      } as unknown as Response);
+    });
+
+    await adapter.chat({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "Hello" }],
+      maxTokens: 1024,
+    });
+
+    const parsed = JSON.parse(capturedBody);
+    expect(parsed.max_completion_tokens).toBe(1024);
+    expect(parsed.max_tokens).toBeUndefined();
+  });
+});
+
+describe("Anthropic Protocol", () => {
+  afterEach(() => {
+    restoreFetch();
+  });
+
+  test("sends x-api-key header instead of Authorization", async () => {
+    const adapter = createAdapter({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "sk-ant-test",
+      protocol: anthropicProtocol,
+    });
+
+    let capturedHeaders: Record<string, string> = {};
+    globalThis.fetch = mock((_url: string, init: RequestInit) => {
+      capturedHeaders = init.headers as Record<string, string>;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "msg_123",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "Hello!" }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+          stop_reason: "end_turn",
+        }),
+      } as unknown as Response);
+    });
+
+    await adapter.chat({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(capturedHeaders["x-api-key"]).toBe("sk-ant-test");
+    expect(capturedHeaders["anthropic-version"]).toBe("2023-06-01");
+    expect(capturedHeaders.Authorization).toBeUndefined();
+  });
+
+  test("posts to /messages endpoint", async () => {
+    const adapter = createAdapter({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "sk-ant-test",
+      protocol: anthropicProtocol,
+    });
+
+    let capturedUrl = "";
+    globalThis.fetch = mock((url: string, _init: RequestInit) => {
+      capturedUrl = url;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "msg_123",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "ok" }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: "end_turn",
+        }),
+      } as unknown as Response);
+    });
+
+    await adapter.chat({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(capturedUrl).toBe("https://api.anthropic.com/v1/messages");
+  });
+
+  test("parses Anthropic tool_use response", async () => {
+    const adapter = createAdapter({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "sk-ant-test",
+      protocol: anthropicProtocol,
+    });
+
+    mockFetch({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: "msg_456",
+        model: "claude-sonnet-4-6",
+        content: [
+          { type: "text", text: "Let me check." },
+          {
+            type: "tool_use",
+            id: "toolu_123",
+            name: "read_file",
+            input: { path: "/tmp/test.txt" },
+          },
+        ],
+        usage: { input_tokens: 20, output_tokens: 30 },
+        stop_reason: "tool_use",
+      }),
+    });
+
+    const result = await adapter.chat({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "Read the file" }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.finishReason).toBe("tool_calls");
+    expect(result.value.content).toBe("Let me check.");
+    expect(result.value.toolCalls).toHaveLength(1);
+    expect(result.value.toolCalls?.[0].function.name).toBe("read_file");
+    expect(result.value.toolCalls?.[0].id).toBe("toolu_123");
+  });
+
+  test("maps extra error code 529 to TIMEOUT", async () => {
+    const adapter = createAdapter({
+      name: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "sk-ant-test",
+      protocol: anthropicProtocol,
+    });
+
+    mockFetch({
+      ok: false,
+      status: 529,
+      statusText: "Overloaded",
+      text: async () => "Overloaded",
+    });
+
+    const result = await adapter.chat({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("TIMEOUT");
   });
 });

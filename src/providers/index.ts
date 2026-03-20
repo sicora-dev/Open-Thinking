@@ -1,6 +1,5 @@
 export {
-  createOpenAICompatibleAdapter,
-  createAnthropicAdapter,
-  createOllamaAdapter,
+  createAdapter,
   createProviderFromConfig,
+  getProtocol,
 } from "./adapters";

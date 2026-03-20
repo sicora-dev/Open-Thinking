@@ -16,25 +16,25 @@ describe("Provider Factory", () => {
     }
   });
 
-  test("creates Anthropic adapter when base_url contains anthropic.com", () => {
+  test("creates Anthropic adapter by provider name", () => {
     const config: ResolvedProvider = {
       type: "openai-compatible",
       base_url: "https://api.anthropic.com/v1",
       api_key: "sk-ant-test",
     };
-    const result = createProviderFromConfig("claude", config);
+    const result = createProviderFromConfig("anthropic", config);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.name).toBe("claude");
+      expect(result.value.name).toBe("anthropic");
     }
   });
 
-  test("returns error for Anthropic without api_key", () => {
+  test("returns error for provider that requires api_key without one", () => {
     const config: ResolvedProvider = {
       type: "openai-compatible",
       base_url: "https://api.anthropic.com/v1",
     };
-    const result = createProviderFromConfig("claude", config);
+    const result = createProviderFromConfig("anthropic", config);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("AUTH_ERROR");

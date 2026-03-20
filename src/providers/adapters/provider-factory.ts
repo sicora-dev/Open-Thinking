@@ -4,71 +4,41 @@ import { type Result, err, ok } from "../../shared/result";
  * Factory that creates an LLMProvider from a resolved provider config.
  * The config is already resolved from the provider catalog and global keys
  * by the pipeline parser — this factory just instantiates the right adapter.
+ *
+ * All providers use the same base adapter. The protocol registry determines
+ * how each provider's API is translated.
  */
 import type { LLMProvider, ResolvedProvider } from "../../shared/types";
-import { createAnthropicAdapter } from "./anthropic-adapter";
-import { createOllamaAdapter } from "./ollama-adapter";
-import { createOpenAICompatibleAdapter } from "./openai-compatible-adapter";
+import { createAdapter } from "./base-adapter";
+import { getProtocol } from "./customizations";
 
 export function createProviderFromConfig(
   name: string,
   config: ResolvedProvider,
 ): Result<LLMProvider> {
-  switch (config.type) {
-    case "openai-compatible": {
-      // Detect Anthropic by base_url
-      if (config.base_url.includes("anthropic.com")) {
-        if (!config.api_key) {
-          return err(
-            new ProviderError(
-              `Anthropic provider "${name}" requires an api_key`,
-              "AUTH_ERROR",
-              undefined,
-              name,
-            ),
-          );
-        }
-        return ok(
-          createAnthropicAdapter({
-            name,
-            apiKey: config.api_key,
-            baseUrl: config.base_url,
-          }),
-        );
-      }
+  const protocol = getProtocol(name);
 
-      return ok(
-        createOpenAICompatibleAdapter({
-          name,
-          baseUrl: config.base_url,
-          apiKey: config.api_key,
-          headers: config.headers,
-        }),
-      );
-    }
-
-    case "ollama":
-      return ok(
-        createOllamaAdapter({
-          name,
-          baseUrl: config.base_url,
-        }),
-      );
-
-    case "custom":
-      // Custom providers use the OpenAI-compatible adapter with custom headers
-      return ok(
-        createOpenAICompatibleAdapter({
-          name,
-          baseUrl: config.base_url,
-          apiKey: config.api_key,
-          headers: config.headers,
-        }),
-      );
-
-    default:
-      return err(
-        new ProviderError(`Unknown provider type: ${config.type}`, "NOT_FOUND", undefined, name),
-      );
+  if (protocol.requiresApiKey && !config.api_key) {
+    return err(
+      new ProviderError(
+        `Provider "${name}" requires an api_key`,
+        "AUTH_ERROR",
+        undefined,
+        name,
+      ),
+    );
   }
+
+  // Ollama uses /v1 sub-path for OpenAI compatibility
+  const baseUrl = config.type === "ollama" ? `${config.base_url}/v1` : config.base_url;
+
+  return ok(
+    createAdapter({
+      name,
+      baseUrl,
+      apiKey: config.api_key,
+      headers: config.headers,
+      protocol,
+    }),
+  );
 }
