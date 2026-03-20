@@ -51,6 +51,7 @@ function formatPipelineView(cfg: PipelineConfig, state: ReplState): string {
   lines.push(`  ${cfg.name} v${cfg.version}`);
   if (state.pipelinePath) lines.push(`  ${state.pipelinePath}`);
   if (activeName) lines.push(`  Active as: ${activeName}`);
+  lines.push(`  Mode: ${cfg.mode}`);
   lines.push("");
 
   // Providers
@@ -63,22 +64,35 @@ function formatPipelineView(cfg: PipelineConfig, state: ReplState): string {
   }
   lines.push("");
 
-  // Execution order (DAG layers)
-  const orderResult = resolveExecutionOrder(cfg.stages);
-  if (orderResult.ok) {
-    const layers = orderResult.value;
-    lines.push(`  Execution order (${layers.length} layer${layers.length !== 1 ? "s" : ""})`);
-    for (const [i, layer] of layers.entries()) {
-      const parallel = layer.length > 1 ? " (parallel)" : "";
-      lines.push(`    ${i + 1}. ${layer.join(", ")}${parallel}`);
+  // Execution order
+  if (cfg.mode === "orchestrated") {
+    const orchestrator = Object.entries(cfg.stages).find(([, s]) => s.role === "orchestrator");
+    const agents = Object.entries(cfg.stages).filter(([, s]) => s.role !== "orchestrator");
+    if (orchestrator) {
+      lines.push(`  Execution: dynamic (orchestrator-driven)`);
+      lines.push(`    Orchestrator: ${orchestrator[0]}`);
+      lines.push(`    Agents: ${agents.map(([n]) => n).join(", ")}`);
+      lines.push("");
     }
-    lines.push("");
+  } else {
+    const orderResult = resolveExecutionOrder(cfg.stages);
+    if (orderResult.ok) {
+      const layers = orderResult.value;
+      lines.push(`  Execution order (${layers.length} layer${layers.length !== 1 ? "s" : ""})`);
+      for (const [i, layer] of layers.entries()) {
+        const parallel = layer.length > 1 ? " (parallel)" : "";
+        lines.push(`    ${i + 1}. ${layer.join(", ")}${parallel}`);
+      }
+      lines.push("");
+    }
   }
 
   // Stages detail
-  lines.push("  Stages");
+  const stageLabel = cfg.mode === "orchestrated" ? "Stages" : "Stages";
+  lines.push(`  ${stageLabel}`);
   for (const [name, stage] of Object.entries(cfg.stages)) {
-    lines.push(`    ${name}`);
+    const roleTag = stage.role === "orchestrator" ? " [orchestrator]" : "";
+    lines.push(`    ${name}${roleTag}`);
     lines.push(`      model:    ${stage.model} (via ${stage.provider})`);
     lines.push(`      skill:    ${stage.skill}`);
 
@@ -97,6 +111,7 @@ function formatPipelineView(cfg: PipelineConfig, state: ReplState): string {
 
     if (stage.max_tokens) lines.push(`      tokens:   ${stage.max_tokens}`);
     if (stage.temperature !== undefined) lines.push(`      temp:     ${stage.temperature}`);
+    if (stage.timeout) lines.push(`      timeout:  ${stage.timeout}s`);
     if (stage.max_iterations) lines.push(`      max iter: ${stage.max_iterations}`);
 
     if (stage.on_fail) {

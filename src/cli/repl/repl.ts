@@ -167,21 +167,28 @@ async function executePipelinePrompt(
 
   const config = state.pipelineConfig;
 
-  // Resolve execution order
-  const orderResult = resolveExecutionOrder(config.stages);
-  if (!orderResult.ok) {
-    console.log(`\n  ${c("red", "DAG error:")} ${orderResult.error.message}\n`);
-    return;
-  }
-
-  const layers = orderResult.value;
-
   // Show execution plan
   console.log();
-  console.log(`  ${c("dim", "Pipeline:")} ${config.name}`);
-  for (const [i, layer] of layers.entries()) {
-    const parallel = layer.length > 1 ? c("dim", " (parallel)") : "";
-    console.log(`  ${c("dim", `  Layer ${i + 1}${parallel}:`)} ${layer.join(", ")}`);
+  console.log(`  ${c("dim", "Pipeline:")} ${config.name} ${c("dim", `(${config.mode})`)}`);
+
+  if (config.mode === "orchestrated") {
+    const orchestrator = Object.entries(config.stages).find(([, s]) => s.role === "orchestrator");
+    const agents = Object.entries(config.stages).filter(([, s]) => s.role !== "orchestrator");
+    if (orchestrator) {
+      console.log(`  ${c("dim", "  Orchestrator:")} ${orchestrator[0]}`);
+      console.log(`  ${c("dim", "  Agents:")} ${agents.map(([n]) => n).join(", ")}`);
+    }
+  } else {
+    const orderResult = resolveExecutionOrder(config.stages);
+    if (!orderResult.ok) {
+      console.log(`\n  ${c("red", "DAG error:")} ${orderResult.error.message}\n`);
+      return;
+    }
+    const layers = orderResult.value;
+    for (const [i, layer] of layers.entries()) {
+      const parallel = layer.length > 1 ? c("dim", " (parallel)") : "";
+      console.log(`  ${c("dim", `  Layer ${i + 1}${parallel}:`)} ${layer.join(", ")}`);
+    }
   }
   console.log();
 
@@ -280,6 +287,24 @@ async function executePipelinePrompt(
   eventBus.on("stage:error", (e) => {
     if (e.type === "stage:error") {
       console.log(`  ${c("red", "✗")} ${e.stageName}: ${e.error}`);
+    }
+  });
+  eventBus.on("delegate:start", (e) => {
+    if (e.type === "delegate:start") {
+      const taskPreview = e.task.length > 80 ? `${e.task.slice(0, 80)}…` : e.task;
+      console.log(`    ${c("cyan", "▸")} ${c("bold", e.agentName)} ${c("dim", `(${e.model})`)}`);
+      console.log(`      ${c("dim", taskPreview)}`);
+    }
+  });
+  eventBus.on("delegate:complete", (e) => {
+    if (e.type === "delegate:complete") {
+      const tokens = e.result.usage ? `${e.result.usage.totalTokens} tokens` : "";
+      console.log(`    ${c("green", "◂")} ${e.agentName} ${c("dim", `${e.durationMs}ms ${tokens}`)}`);
+    }
+  });
+  eventBus.on("delegate:error", (e) => {
+    if (e.type === "delegate:error") {
+      console.log(`    ${c("red", "◂")} ${e.agentName}: ${c("red", e.error)}`);
     }
   });
 
