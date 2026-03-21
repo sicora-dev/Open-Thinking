@@ -1,0 +1,56 @@
+name: orchestrated-dev
+version: "0.1.0"
+mode: orchestrated
+
+context:
+  backend: sqlite
+  vector: embedded
+  ttl: "7d"
+
+providers:
+  - openai
+  - anthropic
+  - ollama
+
+stages:
+  orchestrator:
+    provider: openai
+    model: gpt-4o
+    role: orchestrator
+    skill: core/orchestrator@1.0
+    context:
+      read: ["*"]
+      write: ["orchestrator.*"]
+    max_tokens: 16384
+    timeout: 600
+    fallback_models: [gpt-4o-mini]
+
+  architect:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    skill: core/arch-planner@1.0
+    context:
+      read: ["input.*", "*.output"]
+      write: ["architect.*"]
+    allowed_tools: [read_file, list_files, search_files]
+    fallback_models: [claude-haiku-4-5-20251001]
+
+  coder:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    skill: core/code-writer@1.0
+    context:
+      read: ["input.*", "architect.*", "orchestrator.*"]
+      write: ["coder.*"]
+
+  tester:
+    provider: ollama
+    model: qwen3:8b
+    skill: core/test-writer@1.0
+    context:
+      read: ["*"]
+      write: ["tester.*"]
+
+policies:
+  global:
+    audit_log: true

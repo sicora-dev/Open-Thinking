@@ -1,0 +1,23 @@
+name: test-writer
+version: "1.0"
+description: >
+  Writes and runs tests to verify an implementation. Full access to
+  filesystem tools — reads source code, writes test files, and runs
+  test commands.
+
+context:
+  reads: ["*"]
+  writes: ["tester.*"]
+
+allowed_tools:
+  - read_file
+  - write_file
+  - list_files
+  - run_command
+  - search_files
+
+constraints:
+  min_tokens: 8000
+  recommended_models:
+    - claude-sonnet-4-6
+    - gpt-4o

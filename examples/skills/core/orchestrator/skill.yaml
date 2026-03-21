@@ -1,0 +1,22 @@
+name: orchestrator
+version: "1.0"
+description: >
+  Coordinates multiple agents to complete a task. Decides which agents
+  to invoke, in what order, and with what instructions. Read-only access
+  to the filesystem for inspecting work done by delegates.
+
+context:
+  reads: ["*"]
+  writes: ["orchestrator.*"]
+
+allowed_tools:
+  - read_file
+  - list_files
+  - search_files
+
+constraints:
+  min_tokens: 8000
+  recommended_models:
+    - claude-opus-4-5-20250520
+    - claude-sonnet-4-6
+    - gpt-4o
