@@ -65,6 +65,105 @@ const MAX_COMPLETION_CHECKS = 2;
 /** Max consecutive "length" auto-continues before requiring user input. */
 const MAX_LENGTH_CONTINUES = 3;
 
+// ─── Tool result compaction ──────────────────────────────────
+
+/**
+ * Compact all tool result messages that the model has already processed.
+ *
+ * After the model responds to a batch of tool results, those results are
+ * "consumed" — the model extracted what it needed and put it in its response.
+ * Re-sending the full content on every subsequent iteration wastes tokens
+ * quadratically.
+ *
+ * This function replaces consumed tool result content with a compact summary
+ * like `[read_file: src/main.ts — 247 lines, 8.3KB]`, preserving the
+ * tool_call_id so the conversation structure stays valid.
+ */
+function compactConsumedToolResults(messages: Message[]): void {
+  // Find the last assistant message — everything before it has been processed.
+  // Tool messages AFTER the last assistant message haven't been seen yet.
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+
+  if (lastAssistantIdx <= 0) return;
+
+  for (let i = 0; i < lastAssistantIdx; i++) {
+    const msg = messages[i];
+    if (!msg || msg.role !== "tool") continue;
+    // Already compacted — starts with "["
+    if (msg.content.startsWith("[")) continue;
+
+    const toolName = resolveToolName(messages, i, msg.tool_call_id);
+    const lines = msg.content.split("\n").length;
+    const bytes = new TextEncoder().encode(msg.content).length;
+
+    msg.content = `[${toolName} — ${lines} line${lines !== 1 ? "s" : ""}, ${formatBytes(bytes)}]`;
+  }
+}
+
+/**
+ * Find the tool name for a given tool_call_id by searching backwards
+ * for the assistant message that issued the call.
+ */
+function resolveToolName(messages: Message[], fromIdx: number, toolCallId?: string): string {
+  if (!toolCallId) return "tool";
+
+  for (let i = fromIdx - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role === "assistant" && msg.tool_calls) {
+      const call = msg.tool_calls.find((tc) => tc.id === toolCallId);
+      if (call) {
+        // Extract key argument for context (path, command, pattern, etc.)
+        const detail = extractToolDetail(call.function.name, call.function.arguments);
+        return detail ? `${call.function.name}: ${detail}` : call.function.name;
+      }
+    }
+  }
+
+  return "tool";
+}
+
+/**
+ * Extract a short identifying detail from tool arguments.
+ * e.g., read_file → the file path, run_command → the command.
+ */
+function extractToolDetail(toolName: string, argsJson: string): string | null {
+  try {
+    const args = JSON.parse(argsJson) as Record<string, unknown>;
+    switch (toolName) {
+      case "read_file":
+      case "write_file":
+        return typeof args.path === "string" ? args.path : null;
+      case "run_command":
+        if (typeof args.command === "string") {
+          return args.command.length > 80 ? `${args.command.slice(0, 80)}…` : args.command;
+        }
+        return null;
+      case "search_files":
+        return typeof args.pattern === "string" ? `"${args.pattern}"` : null;
+      case "list_files":
+        return typeof args.path === "string" ? args.path : null;
+      case "delegate":
+        return typeof args.agent === "string" ? args.agent : null;
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<AgentLoopResult>> {
   const { provider, request, toolRegistry, maxIterations, eventBus, stageName, signal } = config;
 
@@ -99,6 +198,10 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
     }
 
     const response = chatResult.value;
+
+    // Compact tool results the model has now processed — before we add
+    // new messages, so the compaction only touches already-seen content.
+    compactConsumedToolResults(messages);
 
     // Accumulate usage
     totalUsage.promptTokens += response.usage.promptTokens;
