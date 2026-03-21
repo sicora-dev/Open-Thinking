@@ -128,6 +128,7 @@ function resolveProviders(
           base_url: baseUrl,
           api_key: apiKey,
           headers: obj.headers as Record<string, string> | undefined,
+          rate_limit_rpm: obj.rate_limit_rpm as number | undefined,
         };
       }
     }
@@ -159,6 +160,7 @@ function resolveProviders(
         base_url: cfg.base_url as string,
         api_key: cfg.api_key as string | undefined,
         headers: cfg.headers as Record<string, string> | undefined,
+        rate_limit_rpm: cfg.rate_limit_rpm as number | undefined,
       };
     }
     return ok(resolved);

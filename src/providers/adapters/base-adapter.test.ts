@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ChatRequest, LLMProvider } from "../../shared/types";
+import { clearRateLimiters, clearTpmLimiters } from "../resilience";
 import { createAdapter } from "./base-adapter";
 import { defaultProtocol } from "./customizations";
 import { openaiProtocol } from "./customizations";
 import { anthropicProtocol } from "./customizations";
+
+/** No retries, no rate limiting — for unit tests that test error classification. */
+const noResilienceConfig = { retryConfig: { maxRetries: 0 }, rateLimitRpm: 100_000, rateLimitTpm: 100_000_000 } as const;
 
 // Mock fetch globally
 const originalFetch = globalThis.fetch;
@@ -32,11 +36,14 @@ describe("Base Adapter", () => {
       baseUrl: "https://api.test.com/v1",
       apiKey: "test-key",
       protocol: defaultProtocol,
+      ...noResilienceConfig,
     });
   });
 
   afterEach(() => {
     restoreFetch();
+    clearRateLimiters();
+    clearTpmLimiters();
   });
 
   const basicRequest: ChatRequest = {
@@ -237,14 +244,17 @@ describe("Base Adapter", () => {
 describe("OpenAI Protocol", () => {
   afterEach(() => {
     restoreFetch();
+    clearRateLimiters();
+    clearTpmLimiters();
   });
 
   test("uses max_completion_tokens instead of max_tokens", async () => {
     const adapter = createAdapter({
-      name: "openai",
+      name: "openai-test",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "test-key",
       protocol: openaiProtocol,
+      ...noResilienceConfig,
     });
 
     let capturedBody = "";
@@ -277,14 +287,17 @@ describe("OpenAI Protocol", () => {
 describe("Anthropic Protocol", () => {
   afterEach(() => {
     restoreFetch();
+    clearRateLimiters();
+    clearTpmLimiters();
   });
 
   test("sends x-api-key header instead of Authorization", async () => {
     const adapter = createAdapter({
-      name: "anthropic",
+      name: "anthropic-test-1",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "sk-ant-test",
       protocol: anthropicProtocol,
+      ...noResilienceConfig,
     });
 
     let capturedHeaders: Record<string, string> = {};
@@ -315,10 +328,11 @@ describe("Anthropic Protocol", () => {
 
   test("posts to /messages endpoint", async () => {
     const adapter = createAdapter({
-      name: "anthropic",
+      name: "anthropic-test-2",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "sk-ant-test",
       protocol: anthropicProtocol,
+      ...noResilienceConfig,
     });
 
     let capturedUrl = "";
@@ -347,10 +361,11 @@ describe("Anthropic Protocol", () => {
 
   test("parses Anthropic tool_use response", async () => {
     const adapter = createAdapter({
-      name: "anthropic",
+      name: "anthropic-test-3",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "sk-ant-test",
       protocol: anthropicProtocol,
+      ...noResilienceConfig,
     });
 
     mockFetch({
@@ -390,10 +405,11 @@ describe("Anthropic Protocol", () => {
 
   test("maps extra error code 529 to TIMEOUT", async () => {
     const adapter = createAdapter({
-      name: "anthropic",
+      name: "anthropic-test-4",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "sk-ant-test",
       protocol: anthropicProtocol,
+      ...noResilienceConfig,
     });
 
     mockFetch({

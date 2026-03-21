@@ -47,6 +47,8 @@ export type ResolvedProvider = {
   base_url: string;
   api_key?: string;
   headers?: Record<string, string>;
+  /** Requests per minute limit. Overrides the built-in default for this provider. */
+  rate_limit_rpm?: number;
 };
 
 export type StageDefinition = {

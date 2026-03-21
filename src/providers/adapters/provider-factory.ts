@@ -20,12 +20,7 @@ export function createProviderFromConfig(
 
   if (protocol.requiresApiKey && !config.api_key) {
     return err(
-      new ProviderError(
-        `Provider "${name}" requires an api_key`,
-        "AUTH_ERROR",
-        undefined,
-        name,
-      ),
+      new ProviderError(`Provider "${name}" requires an api_key`, "AUTH_ERROR", undefined, name),
     );
   }
 
@@ -38,6 +33,7 @@ export function createProviderFromConfig(
       baseUrl,
       apiKey: config.api_key,
       headers: config.headers,
+      rateLimitRpm: config.rate_limit_rpm,
       protocol,
     }),
   );
