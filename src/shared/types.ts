@@ -71,6 +71,8 @@ export type StageDefinition = {
   timeout?: number;
   /** Stage role. "orchestrator" marks this stage as the orchestrator in orchestrated mode. */
   role?: "orchestrator";
+  /** Alternative models to try when the primary model is rate-limited after exhausting retries. */
+  fallback_models?: string[];
   on_fail?: FailureConfig;
 };
 
@@ -266,6 +268,7 @@ export type PipelineEvent =
       durationMs: number;
       success: boolean;
     }
+  | { type: "stage:model-fallback"; stageName: string; fromModel: string; toModel: string }
   | { type: "delegate:start"; agentName: string; task: string; model: string }
   | { type: "delegate:complete"; agentName: string; result: StageResult; durationMs: number }
   | { type: "delegate:error"; agentName: string; error: string };

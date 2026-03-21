@@ -290,6 +290,13 @@ async function executePipelinePrompt(
       console.log(`  ${c("red", "✗")} ${e.stageName}: ${e.error}`);
     }
   });
+  eventBus.on("stage:model-fallback", (e) => {
+    if (e.type === "stage:model-fallback") {
+      console.log(
+        `  ${c("yellow", "⇄")} ${e.stageName}: falling back from ${c("dim", e.fromModel)} → ${c("bold", e.toModel)}`,
+      );
+    }
+  });
   eventBus.on("delegate:start", (e) => {
     if (e.type === "delegate:start") {
       const taskPreview = e.task.length > 80 ? `${e.task.slice(0, 80)}…` : e.task;

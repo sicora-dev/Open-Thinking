@@ -395,8 +395,19 @@ function estimateCost(usage: TokenUsage): number {
   return (usage.totalTokens / 1000) * 0.01;
 }
 
+/** Check if a stage failure was caused by a rate limit error. */
+function isRateLimitFailure(result: StageResult): boolean {
+  if (!result.error) return false;
+  // ProviderError with RATE_LIMIT code or HTTP 429 in error message
+  return result.error.includes("RATE_LIMIT") || result.error.includes("429");
+}
+
 /**
- * Execute a stage with retry support based on on_fail config.
+ * Execute a stage with retry support and model fallback chain.
+ *
+ * 1. Run the stage with its primary model (retries are handled at the HTTP level by the adapter)
+ * 2. If it fails with on_fail config, retry the stage itself
+ * 3. If it still fails with a RATE_LIMIT error and fallback_models are defined, try the next model
  */
 async function executeStageWithRetry(
   stageName: string,
@@ -405,16 +416,39 @@ async function executeStageWithRetry(
 ): Promise<StageResult> {
   let result = await executeStage(stageName, stageDef, deps);
 
+  // Stage-level retries (on_fail config)
   if (result.status === "failed" && stageDef.on_fail) {
     const { max_retries, inject_context } = stageDef.on_fail;
 
     for (let attempt = 0; attempt < max_retries && result.status === "failed"; attempt++) {
-      // Inject failure context if configured
       if (inject_context && result.error) {
         await deps.contextStore.set(inject_context, result.error, stageName);
       }
-
       result = await executeStage(stageName, stageDef, deps);
+    }
+  }
+
+  // Model fallback chain: if still failing due to rate limits, try fallback models
+  if (
+    result.status === "failed" &&
+    isRateLimitFailure(result) &&
+    stageDef.fallback_models?.length
+  ) {
+    for (const fallbackModel of stageDef.fallback_models) {
+      deps.eventBus.emit({
+        type: "stage:model-fallback",
+        stageName,
+        fromModel: stageDef.model,
+        toModel: fallbackModel,
+      });
+
+      // Create a modified stage def with the fallback model
+      const fallbackDef = { ...stageDef, model: fallbackModel };
+      result = await executeStage(stageName, fallbackDef, deps);
+
+      if (result.status !== "failed" || !isRateLimitFailure(result)) {
+        break; // Either succeeded or failed for a non-rate-limit reason
+      }
     }
   }
 
