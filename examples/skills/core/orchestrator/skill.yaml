@@ -9,10 +9,7 @@ context:
   reads: ["*"]
   writes: ["orchestrator.*"]
 
-allowed_tools:
-  - read_file
-  - list_files
-  - search_files
+allowed_tools: []  # Orchestrator only gets delegate (injected automatically)
 
 constraints:
   min_tokens: 8000

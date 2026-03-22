@@ -47,6 +47,8 @@ function c(color: keyof typeof COLORS, text: string): string {
   return `${COLORS[color]}${text}${COLORS.reset}`;
 }
 
+const getSeparator = () => c("dim", "─".repeat(process.stdout.columns || 80));
+
 function printBanner(state: ReplState, globalProviderCount = 0, hasWorkspace = false): void {
   console.log();
   console.log(`  ${c("bold", c("cyan", `OpenMind v${VERSION}`))}`);
@@ -490,6 +492,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
     }
   };
 
+  console.log(getSeparator());
   rl.prompt();
 
   // Cancellation: active controller is set during pipeline execution
@@ -534,6 +537,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
         activeAbortController = null;
       }
 
+      console.log(getSeparator());
       rl.prompt();
     }
 
@@ -541,6 +545,10 @@ export async function startRepl(workingDir?: string): Promise<void> {
   }
 
   rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (trimmed) {
+      console.log(getSeparator());
+    }
     lineQueue.push(line);
     processQueue();
   });
@@ -562,6 +570,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
       console.log(`\n  ${c("yellow", "⚠")} ${c("bold", "Cancelling pipeline...")} ${c("dim", "waiting for current operation to finish")}`);
     } else {
       console.log(`\n  ${c("dim", "Use /exit or Ctrl+D to quit.")}`);
+      console.log(getSeparator());
       rl.prompt();
     }
   });

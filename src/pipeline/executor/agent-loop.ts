@@ -2,19 +2,29 @@
  * Agent loop: iteratively calls an LLM, executes tool calls, and feeds
  * results back until the model stops requesting tools.
  *
- * Stop handling:
- * - "tool_calls": model wants to use tools → execute and continue
- * - "length": model hit token limit → ask user if they want to continue
- * - "stop": model decided to stop → check if work is complete
+ * Context management:
+ * Instead of accumulating an ever-growing message history (which causes
+ * quadratic token growth), the loop maintains **working memory** — an
+ * auto-maintained action log + model notes. Before each LLM call, messages
+ * are rebuilt: [task + working memory] + [last exchange only].
+ * Old messages are discarded; the working memory preserves continuity.
  *
- * When the model stops voluntarily, the loop shows what was done and asks
- * the model if the task is complete. If the model responds with text but
- * no tool calls (common with small models), it gets one more chance to
- * actually use tools before the check counts.
+ * Safety mechanisms:
+ * - **Tool output truncation**: results > 2000 lines or 50KB are truncated.
+ * - **Doom loop detection**: 3 consecutive identical tool calls trigger a
+ *   warning and return the cached result instead of re-executing.
+ * - **Soft stop**: approaching max iterations triggers a wind-down sequence
+ *   that forces the model to summarize and stop cleanly.
  */
 import type { EventBus } from "../../core/events/event-bus";
 import { type Result, err, ok } from "../../shared/result";
-import type { ChatRequest, LLMProvider, Message, TokenUsage } from "../../shared/types";
+import type {
+  ChatRequest,
+  LLMProvider,
+  Message,
+  ToolDefinition,
+  TokenUsage,
+} from "../../shared/types";
 import type { ToolRegistry } from "../../tools";
 
 export type StopReason = "done" | "cancelled" | "max_iterations" | "token_limit" | "error";
@@ -56,106 +66,39 @@ export type AgentLoopResult = {
   workSummary: WorkSummary;
 };
 
-/**
- * Max times the loop will ask the model "are you done?" before accepting
- * a stop. Prevents infinite self-check loops.
- */
-const MAX_COMPLETION_CHECKS = 2;
-
 /** Max consecutive "length" auto-continues before requiring user input. */
 const MAX_LENGTH_CONTINUES = 3;
 
-// ─── Tool result compaction ──────────────────────────────────
+/** Max consecutive identical tool calls before triggering doom loop detection. */
+const DOOM_LOOP_THRESHOLD = 3;
+
+/** Max lines in a tool result before truncation. */
+const TOOL_OUTPUT_MAX_LINES = 2000;
+
+/** Max bytes in a tool result before truncation. */
+const TOOL_OUTPUT_MAX_BYTES = 50 * 1024;
+
+// ─── Tool output truncation ─────────────────────────────────
 
 /**
- * Compact all tool result messages that the model has already processed.
- *
- * After the model responds to a batch of tool results, those results are
- * "consumed" — the model extracted what it needed and put it in its response.
- * Re-sending the full content on every subsequent iteration wastes tokens
- * quadratically.
- *
- * This function replaces consumed tool result content with a compact summary
- * like `[read_file: src/main.ts — 247 lines, 8.3KB]`, preserving the
- * tool_call_id so the conversation structure stays valid.
+ * Truncate tool output that exceeds size limits.
+ * Keeps the first and last portions so the model has head + tail context.
  */
-function compactConsumedToolResults(messages: Message[]): void {
-  // Find the last assistant message — everything before it has been processed.
-  // Tool messages AFTER the last assistant message haven't been seen yet.
-  let lastAssistantIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "assistant") {
-      lastAssistantIdx = i;
-      break;
-    }
+function truncateToolOutput(content: string): string {
+  const bytes = new TextEncoder().encode(content).length;
+  const lines = content.split("\n");
+
+  if (lines.length <= TOOL_OUTPUT_MAX_LINES && bytes <= TOOL_OUTPUT_MAX_BYTES) {
+    return content;
   }
 
-  if (lastAssistantIdx <= 0) return;
+  const keepHead = 200;
+  const keepTail = 100;
+  const head = lines.slice(0, keepHead).join("\n");
+  const tail = lines.slice(-keepTail).join("\n");
+  const omitted = lines.length - keepHead - keepTail;
 
-  for (let i = 0; i < lastAssistantIdx; i++) {
-    const msg = messages[i];
-    if (!msg || msg.role !== "tool") continue;
-    // Already compacted — starts with "["
-    if (msg.content.startsWith("[")) continue;
-
-    const toolName = resolveToolName(messages, i, msg.tool_call_id);
-    const lines = msg.content.split("\n").length;
-    const bytes = new TextEncoder().encode(msg.content).length;
-
-    msg.content = `[${toolName} — ${lines} line${lines !== 1 ? "s" : ""}, ${formatBytes(bytes)}]`;
-  }
-}
-
-/**
- * Find the tool name for a given tool_call_id by searching backwards
- * for the assistant message that issued the call.
- */
-function resolveToolName(messages: Message[], fromIdx: number, toolCallId?: string): string {
-  if (!toolCallId) return "tool";
-
-  for (let i = fromIdx - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg?.role === "assistant" && msg.tool_calls) {
-      const call = msg.tool_calls.find((tc) => tc.id === toolCallId);
-      if (call) {
-        // Extract key argument for context (path, command, pattern, etc.)
-        const detail = extractToolDetail(call.function.name, call.function.arguments);
-        return detail ? `${call.function.name}: ${detail}` : call.function.name;
-      }
-    }
-  }
-
-  return "tool";
-}
-
-/**
- * Extract a short identifying detail from tool arguments.
- * e.g., read_file → the file path, run_command → the command.
- */
-function extractToolDetail(toolName: string, argsJson: string): string | null {
-  try {
-    const args = JSON.parse(argsJson) as Record<string, unknown>;
-    switch (toolName) {
-      case "read_file":
-      case "write_file":
-        return typeof args.path === "string" ? args.path : null;
-      case "run_command":
-        if (typeof args.command === "string") {
-          return args.command.length > 80 ? `${args.command.slice(0, 80)}…` : args.command;
-        }
-        return null;
-      case "search_files":
-        return typeof args.pattern === "string" ? `"${args.pattern}"` : null;
-      case "list_files":
-        return typeof args.path === "string" ? args.path : null;
-      case "delegate":
-        return typeof args.agent === "string" ? args.agent : null;
-      default:
-        return null;
-    }
-  } catch {
-    return null;
-  }
+  return `${head}\n\n[… truncated ${omitted} lines (${formatBytes(bytes)} total) — use read_file with offset/limit to see specific sections …]\n\n${tail}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -164,20 +107,222 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+// ─── Doom loop detection ─────────────────────────────────────
+
+type ToolCallSignature = { tool: string; args: string };
+
+/**
+ * Check if the last N tool calls are identical (same tool + same args).
+ * Returns the cached result if a loop is detected, null otherwise.
+ */
+function checkDoomLoop(
+  recentCalls: ToolCallSignature[],
+  currentTool: string,
+  currentArgs: string,
+  cachedResults: Map<string, string>,
+): string | null {
+  if (recentCalls.length < DOOM_LOOP_THRESHOLD - 1) return null;
+
+  const tail = recentCalls.slice(-(DOOM_LOOP_THRESHOLD - 1));
+  const allMatch = tail.every((c) => c.tool === currentTool && c.args === currentArgs);
+
+  if (!allMatch) return null;
+
+  // Return cached result from the first call
+  const cacheKey = `${currentTool}:${currentArgs}`;
+  return cachedResults.get(cacheKey) ?? null;
+}
+
+// ─── Working memory ──────────────────────────────────────────
+
+/**
+ * Working memory for the agent loop. Two sections:
+ * - **actionLog**: auto-maintained by the system after each tool round.
+ *   One compact line per iteration so the model always knows what it did.
+ * - **notes**: model-maintained via scratchpad_write. For plans, decisions,
+ *   custom context the model wants to persist.
+ */
+type WorkingMemory = {
+  actionLog: string[];
+  notes: string;
+};
+
+const WORKING_MEMORY_NOTE = [
+  "",
+  "## Working Memory",
+  "Your conversation history is trimmed automatically between iterations to save tokens.",
+  "You will always see: (1) the task, (2) your working memory with a full action log, and (3) your most recent exchange.",
+  "The action log is maintained automatically — you will always see what you already did.",
+  "Use `scratchpad_write(content)` to save custom notes (plans, decisions, key findings) that persist across iterations.",
+  "IMPORTANT: Do NOT repeat actions you can see in your action log. Move forward with your task.",
+].join("\n");
+
+const SCRATCHPAD_TOOL_DEFS: ToolDefinition[] = [
+  {
+    name: "scratchpad_write",
+    description:
+      "Save custom notes to your working memory (plans, decisions, key findings). Persists across iterations. Content REPLACES previous notes — include everything you want to keep.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "The content to save. Replaces any previous notes.",
+        },
+      },
+      required: ["content"],
+    },
+  },
+];
+
+/**
+ * Wrap a tool registry to include the scratchpad_write tool.
+ */
+function withScratchpad(registry: ToolRegistry, memory: WorkingMemory): ToolRegistry {
+  return {
+    definitions(): ToolDefinition[] {
+      return [...registry.definitions(), ...SCRATCHPAD_TOOL_DEFS];
+    },
+    async execute(name: string, args: Record<string, unknown>): Promise<Result<string>> {
+      if (name === "scratchpad_write") {
+        memory.notes = String(args.content ?? "");
+        return ok("Saved to working memory.");
+      }
+      return registry.execute(name, args);
+    },
+  };
+}
+
+/**
+ * Build the task message for the current iteration.
+ * Includes the original task + working memory (action log + notes).
+ */
+function buildTaskMessage(original: Message, memory: WorkingMemory): Message {
+  const hasLog = memory.actionLog.length > 0;
+  const hasNotes = memory.notes.length > 0;
+
+  if (!hasLog && !hasNotes) return original;
+
+  const sections: string[] = [];
+
+  if (hasLog) {
+    sections.push("## Action History");
+    sections.push(...memory.actionLog);
+  }
+
+  if (hasNotes) {
+    sections.push("");
+    sections.push("## Your Notes");
+    sections.push(memory.notes);
+  }
+
+  return {
+    ...original,
+    content: `${original.content}\n\n--- Working Memory ---\n${sections.join("\n")}\n--- End Working Memory ---`,
+  };
+}
+
+/**
+ * Summarize a single tool call result into a compact string.
+ */
+function summarizeToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+  success: boolean,
+  resultContent: string,
+): string {
+  let callSig = toolName;
+  const keyArg = getKeyArg(toolName, args);
+  if (keyArg) callSig = `${toolName}(${keyArg})`;
+
+  if (!success) return `${callSig} → ERROR`;
+
+  switch (toolName) {
+    case "read_file": {
+      const lines = resultContent.split("\n").length;
+      return `${callSig} → ${lines} lines`;
+    }
+    case "write_file":
+      return `${callSig} → OK`;
+    case "list_files": {
+      const items = resultContent.split("\n").filter((l) => l.trim()).length;
+      return `${callSig} → ${items} items`;
+    }
+    case "run_command": {
+      const firstLine = resultContent.split("\n")[0] ?? "";
+      const preview = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+      return `${callSig} → ${preview}`;
+    }
+    case "search_files": {
+      const matches = resultContent.split("\n").filter((l) => l.trim()).length;
+      return `${callSig} → ${matches} matches`;
+    }
+    case "delegate": {
+      const preview = resultContent.length > 80 ? `${resultContent.slice(0, 80)}…` : resultContent;
+      return `${callSig} → ${preview}`;
+    }
+    case "scratchpad_write":
+      return `${callSig} → saved`;
+    default:
+      return `${callSig} → done`;
+  }
+}
+
+/** Extract the most identifying argument for a tool call. */
+function getKeyArg(toolName: string, args: Record<string, unknown>): string | null {
+  switch (toolName) {
+    case "read_file":
+    case "write_file":
+    case "list_files":
+      return typeof args.path === "string" ? args.path : null;
+    case "run_command":
+      if (typeof args.command === "string") {
+        return args.command.length > 60 ? `${args.command.slice(0, 60)}…` : args.command;
+      }
+      return null;
+    case "search_files":
+      return typeof args.pattern === "string" ? `"${args.pattern}"` : null;
+    case "delegate":
+      return typeof args.agent === "string" ? args.agent : null;
+    default:
+      return null;
+  }
+}
+
+// ─── Agent loop ──────────────────────────────────────────────
+
 export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<AgentLoopResult>> {
   const { provider, request, toolRegistry, maxIterations, eventBus, stageName, signal } = config;
 
-  const messages: Message[] = [...request.messages];
+  // Set up working memory and augmented tool registry
+  const memory: WorkingMemory = { actionLog: [], notes: "" };
+  const registry = withScratchpad(toolRegistry, memory);
+
+  // Append working memory instructions to system prompt
+  const systemPrompt = request.systemPrompt
+    ? `${request.systemPrompt}${WORKING_MEMORY_NOTE}`
+    : WORKING_MEMORY_NOTE;
+
+  // Save the original task message (first user message)
+  const originalTask = request.messages[0];
+  if (!originalTask) {
+    return err(new Error("Agent loop requires at least one message"));
+  }
+
+  // State
   const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const fullHistory: Message[] = [...request.messages];
+  let lastExchange: Message[] = [];
   let finalContent = "";
   let iterations = 0;
-  let completionChecks = 0;
   let lengthContinues = 0;
   let stopReason: StopReason = "done";
-
-  // Track what the model has done
   const filesWritten: string[] = [];
   const commandsRun: string[] = [];
+
+  // Doom loop tracking
+  const recentCalls: ToolCallSignature[] = [];
+  const cachedResults = new Map<string, string>();
 
   for (let i = 0; i < maxIterations; i++) {
     if (signal?.aborted) {
@@ -187,9 +332,32 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
     iterations++;
 
+    // ── Soft stop: wind down near max iterations ─────────────
+    const remaining = maxIterations - i;
+    const isFinalIteration = remaining === 1;
+    const isWindDown = remaining === 2;
+
+    // Build messages: refreshed task + working memory + last exchange only
+    const currentMessages = [buildTaskMessage(originalTask, memory), ...lastExchange];
+
+    // On wind-down, inject a warning
+    if (isWindDown) {
+      const windDownMsg: Message = {
+        role: "user",
+        content:
+          "IMPORTANT: You are approaching the maximum number of steps. " +
+          "Finish your current work NOW. On the next step you will not have access to tools. " +
+          "Complete any critical writes, then prepare a summary of what you accomplished and what remains.",
+      };
+      currentMessages.push(windDownMsg);
+    }
+
     const chatResult = await provider.chat({
       ...request,
-      messages,
+      systemPrompt,
+      messages: currentMessages,
+      // Final iteration: no tools — force a text summary
+      tools: isFinalIteration ? [] : registry.definitions(),
       signal,
     });
 
@@ -199,21 +367,19 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
     const response = chatResult.value;
 
-    // Compact tool results the model has now processed — before we add
-    // new messages, so the compaction only touches already-seen content.
-    compactConsumedToolResults(messages);
-
     // Accumulate usage
     totalUsage.promptTokens += response.usage.promptTokens;
     totalUsage.completionTokens += response.usage.completionTokens;
     totalUsage.totalTokens += response.usage.totalTokens;
 
-    // Append assistant message
-    messages.push({
+    // Build assistant message and start collecting this round's exchange
+    const assistantMsg: Message = {
       role: "assistant",
       content: response.content,
       tool_calls: response.toolCalls,
-    });
+    };
+    fullHistory.push(assistantMsg);
+    const exchange: Message[] = [assistantMsg];
 
     if (response.content) {
       finalContent = response.content;
@@ -229,25 +395,31 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         message: `Output token limit reached (hit ${lengthContinues} time${lengthContinues > 1 ? "s" : ""})`,
       });
 
-      // Auto-continue a few times (the model was cut off, not done)
       if (lengthContinues <= MAX_LENGTH_CONTINUES && i < maxIterations - 1) {
-        messages.push({
+        const continueMsg: Message = {
           role: "user",
-          content: "Your response was cut off because you hit the output token limit. Continue exactly where you left off.",
-        });
+          content:
+            "Your response was cut off because you hit the output token limit. Continue exactly where you left off.",
+        };
+        exchange.push(continueMsg);
+        fullHistory.push(continueMsg);
+        lastExchange = exchange;
         continue;
       }
 
-      // Too many length hits — ask user if they want to continue
       if (config.onTokenLimit) {
         const summary = { filesWritten: [...filesWritten], commandsRun: [...commandsRun] };
         const shouldContinue = await config.onTokenLimit(summary);
         if (shouldContinue) {
-          lengthContinues = 0; // Reset counter
-          messages.push({
+          lengthContinues = 0;
+          const continueMsg: Message = {
             role: "user",
-            content: "The user has confirmed you should continue. Pick up where you left off and keep working.",
-          });
+            content:
+              "The user has confirmed you should continue. Pick up where you left off and keep working.",
+          };
+          exchange.push(continueMsg);
+          fullHistory.push(continueMsg);
+          lastExchange = exchange;
           continue;
         }
       }
@@ -258,49 +430,14 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
     // ── Handle "stop" or no tool calls — model decided to stop ──
     if (response.finishReason !== "tool_calls" || !response.toolCalls?.length) {
-      // Reset length counter since this was a voluntary stop
       lengthContinues = 0;
-
-      if (
-        filesWritten.length + commandsRun.length > 0 &&
-        completionChecks < MAX_COMPLETION_CHECKS &&
-        i < maxIterations - 1
-      ) {
-        // Check if the model responded with text but no tools (common with
-        // small models that say "I'll continue" without actually calling tools).
-        // Don't count this as a completion check — give it a direct nudge.
-        const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
-        if (!hasToolCalls && completionChecks > 0) {
-          // Already asked once, model responded with text only — nudge harder
-          messages.push({
-            role: "user",
-            content:
-              "You said you would continue but did not use any tools. " +
-              "You MUST call write_file, run_command, or other tools now. Do not describe what you will do — do it.",
-          });
-          continue;
-        }
-
-        completionChecks++;
-        const summary = buildWorkSummaryText(filesWritten, commandsRun);
-        messages.push({
-          role: "user",
-          content:
-            `You stopped. Here is what you have done so far:\n${summary}\n\n` +
-            "Review your original task and the plan. Is everything complete? " +
-            "If there are remaining files to create or steps to finish, continue working using the tools. " +
-            "If everything is truly done, respond with just the word DONE.",
-        });
-        continue;
-      }
-
       stopReason = "done";
       break;
     }
 
     // ── Execute tool calls ───────────────────────────────────
-    // Reset length counter since the model is actively working
     lengthContinues = 0;
+    const iterationSummaries: string[] = [];
 
     for (const toolCall of response.toolCalls) {
       if (signal?.aborted) {
@@ -316,6 +453,34 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         // If args aren't valid JSON, pass empty
       }
 
+      const argsJson = JSON.stringify(args);
+
+      // ── Doom loop check ──────────────────────────────────
+      const cachedResult = checkDoomLoop(recentCalls, toolName, argsJson, cachedResults);
+      if (cachedResult !== null) {
+        eventBus.emit({
+          type: "stage:warning",
+          stageName,
+          message: `Doom loop detected: ${toolName} called ${DOOM_LOOP_THRESHOLD} times with identical args`,
+        });
+
+        // Return cached result + warning instead of re-executing
+        const warningContent = `[Loop detected: you have called ${toolName} with the same arguments ${DOOM_LOOP_THRESHOLD} times. Returning cached result. Move on to the next step of your task.]\n\n${cachedResult}`;
+        const toolMsg: Message = {
+          role: "tool",
+          content: warningContent,
+          tool_call_id: toolCall.id,
+        };
+        exchange.push(toolMsg);
+        fullHistory.push(toolMsg);
+
+        recentCalls.push({ tool: toolName, args: argsJson });
+        iterationSummaries.push(
+          `${toolName}(${getKeyArg(toolName, args) ?? ""}) → LOOP (cached)`,
+        );
+        continue;
+      }
+
       // Track work done
       if (toolName === "write_file" && typeof args.path === "string") {
         filesWritten.push(args.path);
@@ -325,20 +490,18 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         );
       }
 
-      eventBus.emit({
-        type: "tool:call",
-        stageName,
-        toolName,
-        args,
-      });
+      eventBus.emit({ type: "tool:call", stageName, toolName, args });
 
       const start = Date.now();
-      const toolResult = await toolRegistry.execute(toolName, args);
+      const toolResult = await registry.execute(toolName, args);
       const durationMs = Date.now() - start;
 
-      const resultContent = toolResult.ok
+      let resultContent = toolResult.ok
         ? toolResult.value
         : JSON.stringify({ error: toolResult.error.message });
+
+      // ── Truncate large tool outputs ────────────────────────
+      resultContent = truncateToolOutput(resultContent);
 
       eventBus.emit({
         type: "tool:result",
@@ -348,46 +511,36 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
         success: toolResult.ok,
       });
 
-      messages.push({
+      const toolMsg: Message = {
         role: "tool",
         content: resultContent,
         tool_call_id: toolCall.id,
-      });
+      };
+      exchange.push(toolMsg);
+      fullHistory.push(toolMsg);
+
+      // Track for doom loop detection
+      recentCalls.push({ tool: toolName, args: argsJson });
+      const cacheKey = `${toolName}:${argsJson}`;
+      if (!cachedResults.has(cacheKey)) {
+        cachedResults.set(cacheKey, resultContent);
+      }
+
+      // Build compact summary for the action log
+      iterationSummaries.push(summarizeToolCall(toolName, args, toolResult.ok, resultContent));
     }
+
+    // Auto-append to action log
+    memory.actionLog.push(`[${iterations}] ${iterationSummaries.join(" | ")}`);
+
+    lastExchange = exchange;
   }
 
-  // If we exited the for loop naturally, it's max_iterations
   if (iterations >= maxIterations && stopReason === "done") {
     stopReason = "max_iterations";
   }
 
   const workSummary = { filesWritten, commandsRun };
-  return ok({ finalContent, messages, totalUsage, iterations, stopReason, workSummary });
+  return ok({ finalContent, messages: fullHistory, totalUsage, iterations, stopReason, workSummary });
 }
 
-/**
- * Build a human-readable summary of what the agent has done so far.
- */
-function buildWorkSummaryText(filesWritten: string[], commandsRun: string[]): string {
-  const lines: string[] = [];
-
-  if (filesWritten.length > 0) {
-    lines.push(`Files written (${filesWritten.length}):`);
-    for (const f of filesWritten) {
-      lines.push(`  - ${f}`);
-    }
-  }
-
-  if (commandsRun.length > 0) {
-    lines.push(`Commands run (${commandsRun.length}):`);
-    for (const c of commandsRun) {
-      lines.push(`  - ${c}`);
-    }
-  }
-
-  if (lines.length === 0) {
-    lines.push("(no files written, no commands run)");
-  }
-
-  return lines.join("\n");
-}

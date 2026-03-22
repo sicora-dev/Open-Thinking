@@ -160,8 +160,8 @@ const commands: SlashCommand[] = [
   {
     name: "pipeline",
     aliases: ["p"],
-    description: "Manage pipelines: show, list, add, remove, switch, default",
-    usage: "[list|add <path> [project|user]|remove <name> [project|user]|switch <name>|default <name> <project|user|clear>|load <path>]",
+    description: "Manage pipelines: show, list, add, remove, switch, refresh, default",
+    usage: "[list|add <path> [project|user]|remove <name> [project|user]|switch <name>|refresh [name]|default <name> <project|user|clear>|load <path>]",
     async execute(args, state) {
       const parts = args.trim().split(/\s+/);
       const subcommand = parts[0] || "";
@@ -406,6 +406,51 @@ const commands: SlashCommand[] = [
 
         setPipelineDefault(state.workingDir, name, action as PipelineOrigin);
         return { output: `  Default for "${name}" set to [${action}].` };
+      }
+
+      // /pipeline refresh [name] — reload pipeline from disk
+      if (subcommand === "refresh" || subcommand === "reload") {
+        const name = parts[1];
+
+        if (!name) {
+          // Refresh the currently loaded pipeline
+          if (!state.pipelinePath) {
+            return { output: "  No pipeline loaded. Nothing to refresh." };
+          }
+          if (!existsSync(state.pipelinePath)) {
+            return { output: `  Pipeline file no longer exists: ${state.pipelinePath}` };
+          }
+          const result = await parsePipeline(state.pipelinePath);
+          if (!result.ok) {
+            return { output: `  Error reloading pipeline: ${result.error.message}` };
+          }
+          return {
+            output: `  Refreshed: ${result.value.name} v${result.value.version}`,
+            stateUpdates: { pipelineConfig: result.value },
+          };
+        }
+
+        // Refresh a specific pipeline by name
+        const resolved = resolvePipelinePath(state.workingDir, name);
+        if (resolved === null) {
+          return { output: `  Pipeline "${name}" not found. Use /pipeline list to see available pipelines.` };
+        }
+        if ("conflict" in resolved) {
+          return {
+            output: `  ⚠ "${name}" exists in both project and user. Resolve with /pipeline default ${name} <project|user>.`,
+          };
+        }
+        const result = await parsePipeline(resolved.path);
+        if (!result.ok) {
+          return { output: `  Error reloading pipeline: ${result.error.message}` };
+        }
+        return {
+          output: `  Refreshed: ${result.value.name} v${result.value.version} [${resolved.origin}]`,
+          stateUpdates: {
+            pipelineConfig: result.value,
+            pipelinePath: resolved.path,
+          },
+        };
       }
 
       // /pipeline load <path> — load from arbitrary file (temporary, not registered)

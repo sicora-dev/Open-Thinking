@@ -14,8 +14,8 @@ providers:
 
 stages:
   orchestrator:
-    provider: openai
-    model: gpt-4o
+    provider: anthropic
+    model: claude-sonnet-4-5
     role: orchestrator
     skill: core/orchestrator@1.0
     context:
@@ -26,8 +26,8 @@ stages:
     fallback_models: [gpt-4o-mini]
 
   architect:
-    provider: anthropic
-    model: claude-sonnet-4-6
+    provider: openai
+    model: gpt-5.4-mini
     skill: core/arch-planner@1.0
     context:
       read: ["input.*", "*.output"]
@@ -36,8 +36,8 @@ stages:
     fallback_models: [claude-haiku-4-5-20251001]
 
   coder:
-    provider: anthropic
-    model: claude-sonnet-4-6
+    provider: openai
+    model: gpt-5.4-mini
     skill: core/code-writer@1.0
     context:
       read: ["input.*", "architect.*", "orchestrator.*"]

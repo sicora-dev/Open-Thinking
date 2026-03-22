@@ -551,18 +551,17 @@ async function executeStageWithDelegateTool(
 
   const contextBlock = formatContextForPrompt(contextResult.value);
 
-  // Load skill + build tool registry with delegate injected
+  // Load skill
   const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
   const skill = loadSkill(stageDef.skill, skillsDir);
-  const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
-  const toolRegistry = createToolRegistry(process.cwd(), allowedTools);
 
-  // Inject delegate tool — the orchestrator always gets it regardless of allowed_tools
-  const augmentedRegistry = {
-    definitions: () => [...toolRegistry.definitions(), { name: delegateTool.name, description: delegateTool.description, parameters: delegateTool.parameters }],
+  // Orchestrator only gets the delegate tool — no filesystem tools.
+  // If it could read/write files, it would do everything itself and never delegate.
+  const orchestratorRegistry = {
+    definitions: () => [{ name: delegateTool.name, description: delegateTool.description, parameters: delegateTool.parameters }],
     execute: async (name: string, args: Record<string, unknown>) => {
       if (name === "delegate") return delegateTool.execute(args).then((r) => r.ok ? ok(typeof r.value === "string" ? r.value : JSON.stringify(r.value)) : err(r.error));
-      return toolRegistry.execute(name, args);
+      return err(new ProviderError(`Tool "${name}" is not available to the orchestrator. Use delegate to assign work to agents.`, "API_ERROR"));
     },
   };
 
@@ -581,7 +580,7 @@ async function executeStageWithDelegateTool(
     systemPrompt,
     maxTokens: stageDef.max_tokens ?? 16384,
     temperature: stageDef.temperature,
-    tools: augmentedRegistry.definitions(),
+    tools: orchestratorRegistry.definitions(),
     timeoutMs: stageDef.timeout ? stageDef.timeout * 1000 : undefined,
   };
 
@@ -589,7 +588,7 @@ async function executeStageWithDelegateTool(
   const loopResult = await runAgentLoop({
     provider,
     request,
-    toolRegistry: augmentedRegistry,
+    toolRegistry: orchestratorRegistry,
     maxIterations,
     eventBus,
     stageName,
