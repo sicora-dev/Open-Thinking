@@ -23,13 +23,14 @@
     "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "dependencies": {
-    "commander": "^13.1.0",
-    "yaml": "^2.7.0",
     "better-sqlite3": "^11.8.0",
-    "vectra": "^0.9.0",
     "chalk": "^5.4.0",
+    "commander": "^13.1.0",
+    "glob": "^11.0.0",
+    "openthk": "^0.1.2",
     "ora": "^8.1.0",
-    "glob": "^11.0.0"
+    "vectra": "^0.9.0",
+    "yaml": "^2.7.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

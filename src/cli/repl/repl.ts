@@ -26,10 +26,9 @@ import {
   setActivePipeline,
   writeHistoryEntry,
 } from "../../workspace";
+import { VERSION } from "../../version";
 import { attachSlashCompletion, type KeypressEvent } from "./slash-completion";
 import { type ReplState, executeSlashCommand, getCommandCompletions, getCompletionEntries } from "./slash-commands";
-
-const VERSION = "0.1.0";
 
 const COLORS = {
   reset: "\x1b[0m",

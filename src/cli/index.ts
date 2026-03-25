@@ -12,13 +12,14 @@ import { registerProviderCommand } from "./commands/provider";
 import { registerRunCommand } from "./commands/run";
 import { registerValidateCommand } from "./commands/validate";
 import { startRepl } from "./repl";
+import { VERSION } from "../version";
 
 const program = new Command();
 
 program
   .name("openthk")
   .description("Multi-LLM agent orchestration framework")
-  .version("0.1.0");
+  .version(VERSION);
 
 registerInitCommand(program);
 registerRunCommand(program);

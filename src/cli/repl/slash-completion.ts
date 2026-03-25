@@ -42,14 +42,13 @@ export function attachSlashCompletion(
   let matches: CompletionEntry[] = [];
   let active = false;
 
-  function visibleWidth(text: string): number {
-    return text.replace(/\x1b\[[0-9;]*m/g, "").length;
-  }
-
   function countTerminalRows(text: string): number {
-    const columns = process.stdout.columns || 80;
-    const width = visibleWidth(text);
-    return Math.max(1, Math.floor(Math.max(0, width - 1) / columns) + 1);
+    const rlInternal = rl as unknown as {
+      _getDisplayPos?: (line: string) => { cols: number; rows: number };
+    };
+    const plainText = text.replace(/\x1b\[[0-9;]*m/g, "");
+    const pos = rlInternal._getDisplayPos?.(plainText);
+    return pos ? pos.rows + 1 : 1;
   }
 
   function getMatches(line: string): CompletionEntry[] {
