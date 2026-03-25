@@ -1,4 +1,4 @@
-# OpenMind Pipeline Configuration
+# OpenThinking Pipeline Configuration
 
 name: feature-development
 version: "1.0"
@@ -8,7 +8,7 @@ context:
   vector: embedded
   ttl: 7d
 
-# Just list providers by name. API keys come from ~/.openmind/providers.json.
+# Just list providers by name. API keys come from ~/.openthk/providers.json.
 # For custom providers not in the catalog, use the object form:
 #   - id: my-custom
 #     base_url: https://custom.api.com/v1
@@ -20,7 +20,7 @@ stages:
   planning:
     provider: anthropic
     model: claude-opus-4-5-20250520
-    skill: openmind/arch-planner@1.0
+    skill: openthk/arch-planner@1.0
     context:
       read: ["input.*"]
       write: [plan.*]
@@ -30,7 +30,7 @@ stages:
   develop:
     provider: anthropic
     model: claude-sonnet-4-20250514
-    skill: openmind/code-writer@1.0
+    skill: openthk/code-writer@1.0
     context:
       read: [plan.*, code.decisions]
       write: [code.*]
@@ -41,7 +41,7 @@ stages:
   testing:
     provider: anthropic
     model: claude-sonnet-4-20250514
-    skill: openmind/test-gen@1.0
+    skill: openthk/test-gen@1.0
     context:
       read: [plan.*, code.*]
       write: [test.*]
