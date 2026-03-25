@@ -1,6 +1,6 @@
 {
   "name": "openthk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "The first multi-LLM agent orchestration framework for building pipelines, orchestrators, and collaborative AI workflows",
   "type": "module",
   "bin": {
@@ -41,7 +41,10 @@
     "node": ">=20",
     "bun": ">=1.1.0"
   },
-  "os": ["darwin", "linux"],
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
