@@ -175,8 +175,13 @@ export function attachSlashCompletion(
       return false;
     }
 
-    // For all other keys, let readline process first, then update
-    // We return false so readline processes the key, and schedule an update
+    // For normal editing keys, clear the menu before readline redraws the prompt.
+    // Keeping our custom menu visible while readline rewrites the line causes
+    // duplicate prompt rows and ghost lines in some terminals.
+    clearMenu();
+    active = false;
+
+    // Let readline process first, then rebuild matches from the updated line.
     queueMicrotask(update);
     return false;
   }
