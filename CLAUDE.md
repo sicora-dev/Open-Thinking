@@ -1,8 +1,8 @@
-# OpenMind — AI Pipeline Orchestrator
+# OpenThinking — AI Pipeline Orchestrator
 
 ## What is this project?
 
-OpenMind is an open-source CLI-first tool that lets development teams create shared AI workflows where multiple LLMs collaborate on tasks with shared context. Think "Kubernetes for AI agents."
+OpenThinking is an open-source CLI-first tool that lets development teams create shared AI workflows where multiple LLMs collaborate on tasks with shared context. Think "Kubernetes for AI agents."
 
 **Core idea**: A team defines a pipeline in YAML (e.g., planning → development → testing), assigns a different LLM to each stage (Opus for planning, Sonnet for coding, etc.), and the tool orchestrates execution with shared context, access policies, and reusable skills.
 
@@ -27,7 +27,7 @@ src/
 ├── cli/              # CLI entry point and interactive REPL
 │   ├── commands/     # One-shot CLI commands (init, run, validate)
 │   └── repl/         # Interactive REPL shell, slash commands
-├── config/           # Global configuration (~/.openmind/)
+├── config/           # Global configuration (~/.openthk/)
 │   ├── global-config # Provider API key storage
 │   ├── provider-catalog # Built-in provider definitions (18+ providers)
 │   └── setup-wizard  # Interactive provider setup with arrow-key navigation
@@ -50,9 +50,9 @@ src/
 
 ## Key Design Decisions
 
-1. **Interactive REPL**: Running `openmind` opens an interactive shell (like Claude Code). Slash commands (`/pipeline`, `/providers`, `/help`) for configuration, natural language for pipeline execution.
+1. **Interactive REPL**: Running `openthk` opens an interactive shell (like Claude Code). Slash commands (`/pipeline`, `/providers`, `/help`) for configuration, natural language for pipeline execution.
 
-2. **Global provider config**: API keys are stored globally in `~/.openmind/providers.json`, not per-project. The setup wizard (`/providers setup`) presents an interactive list with arrow-key navigation.
+2. **Global provider config**: API keys are stored globally in `~/.openthk/providers.json`, not per-project. The setup wizard (`/providers setup`) presents an interactive list with arrow-key navigation.
 
 3. **Simplified YAML**: Users only declare provider names in the pipeline YAML — `type`, `base_url`, and `api_key` are all resolved automatically from the provider catalog and global config. No need for env vars or manual URLs.
 
@@ -88,7 +88,7 @@ src/
 
 **IMPORTANT**: Providers are declared as a simple list of names. The parser resolves
 `type`, `base_url`, and `api_key` automatically from the provider catalog
-(`src/config/provider-catalog.ts`) and global config (`~/.openmind/providers.json`).
+(`src/config/provider-catalog.ts`) and global config (`~/.openthk/providers.json`).
 Users should NEVER have to specify `type`, `base_url`, or `api_key` in the YAML
 for known providers. The old record-based format is still supported for backward
 compatibility but should not be used in new code or examples.
@@ -104,7 +104,7 @@ context:                        # Optional (defaults to sqlite/embedded/7d)
   ttl: string                   # Context expiration (e.g., "7d")
 
 # Providers: just list names from the catalog.
-# API keys come from ~/.openmind/providers.json (setup via /providers setup).
+# API keys come from ~/.openthk/providers.json (setup via /providers setup).
 providers:
   - openai                      # Resolved to https://api.openai.com/v1
   - anthropic                   # Resolved to https://api.anthropic.com/v1
@@ -258,10 +258,10 @@ constraints:
 ## CLI Usage
 
 ```
-openmind                       # Open interactive REPL shell
-openmind init [name]           # Initialize new project (one-shot)
-openmind run -p <file>         # Execute pipeline (one-shot)
-openmind validate -f <file>    # Validate pipeline YAML (one-shot)
+openthk                       # Open interactive REPL shell
+openthk init [name]           # Initialize new project (one-shot)
+openthk run -p <file>         # Execute pipeline (one-shot)
+openthk validate -f <file>    # Validate pipeline YAML (one-shot)
 ```
 
 ### REPL Slash Commands

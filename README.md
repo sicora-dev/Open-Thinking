@@ -1,27 +1,27 @@
-# OpenMind
+# OpenThinking
 
 **Open-source AI pipeline orchestrator for development teams.**
 
 Define pipelines where multiple LLMs collaborate on tasks with shared context, access policies, and reusable skills.
 
 ```yaml
-# openmind.pipeline.yaml
+# openthk.pipeline.yaml
 stages:
   planning:
     provider: anthropic
     model: claude-opus-4-5-20250520
-    skill: openmind/arch-planner@1.0
+    skill: openthk/arch-planner@1.0
 
   develop:
     provider: moonshot
     model: kimi-k2-0711
-    skill: openmind/code-writer@1.0
+    skill: openthk/code-writer@1.0
     depends_on: [planning]
 
   testing:
     provider: anthropic
     model: claude-sonnet-4-20250514
-    skill: openmind/test-gen@1.0
+    skill: openthk/test-gen@1.0
     depends_on: [develop]
 ```
 
@@ -37,25 +37,25 @@ stages:
 
 ```bash
 # Install
-bun install -g openmind
+bun install -g openthk
 
 # Initialize a project
-openmind init my-project
+openthk init my-project
 cd my-project
 
 # Configure a provider
-openmind provider add anthropic --key $ANTHROPIC_API_KEY
+openthk provider add anthropic --key $ANTHROPIC_API_KEY
 
 # Run a pipeline
-openmind run --pipeline feature-development --input "Build a REST API for user management"
+openthk run --pipeline feature-development --input "Build a REST API for user management"
 ```
 
 ## Development
 
 ```bash
 # Clone and install
-git clone https://github.com/your-org/openmind
-cd openmind
+git clone https://github.com/your-org/openthinking
+cd openthinking
 bun install
 
 # Run in dev mode

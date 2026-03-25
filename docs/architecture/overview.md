@@ -1,4 +1,4 @@
-# OpenMind Architecture Overview
+# OpenThinking Architecture Overview
 
 ## Core Concepts
 
