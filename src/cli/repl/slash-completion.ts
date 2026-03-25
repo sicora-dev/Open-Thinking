@@ -4,15 +4,12 @@
  * Renders a filtered menu below the prompt as the user types.
  * Tab accepts the selected entry, Up/Down navigate, Esc dismisses.
  */
-import type { Interface as ReadlineInterface } from "node:readline";
+import { clearLine, cursorTo, moveCursor, type Interface as ReadlineInterface } from "node:readline";
 import type { CompletionEntry } from "./slash-commands";
 
 const MAX_VISIBLE = 8;
 
 const ESC = "\x1b";
-const SAVE_CURSOR = `${ESC}7`;
-const RESTORE_CURSOR = `${ESC}8`;
-const CLEAR_LINE = `${ESC}[2K`;
 const DIM = `${ESC}[2m`;
 const BOLD = `${ESC}[1m`;
 const CYAN = `${ESC}[36m`;
@@ -45,6 +42,16 @@ export function attachSlashCompletion(
   let matches: CompletionEntry[] = [];
   let active = false;
 
+  function visibleWidth(text: string): number {
+    return text.replace(/\x1b\[[0-9;]*m/g, "").length;
+  }
+
+  function countTerminalRows(text: string): number {
+    const columns = process.stdout.columns || 80;
+    const width = visibleWidth(text);
+    return Math.max(1, Math.floor(Math.max(0, width - 1) / columns) + 1);
+  }
+
   function getMatches(line: string): CompletionEntry[] {
     if (!line.startsWith("/") || line.includes(" ")) return [];
     const query = line.toLowerCase();
@@ -54,13 +61,14 @@ export function attachSlashCompletion(
   function clearMenu(): void {
     if (renderedLines === 0) return;
     const out = process.stdout;
-    // Move below current line and clear each rendered line
-    let buf = SAVE_CURSOR;
+    const cols = typeof rl.getCursorPos === "function" ? rl.getCursorPos().cols : 0;
+
     for (let i = 0; i < renderedLines; i++) {
-      buf += `\n${CLEAR_LINE}`;
+      moveCursor(out, 0, 1);
+      clearLine(out, 0);
     }
-    buf += RESTORE_CURSOR;
-    out.write(buf);
+    moveCursor(out, 0, -renderedLines);
+    cursorTo(out, cols);
     renderedLines = 0;
   }
 
@@ -74,8 +82,8 @@ export function attachSlashCompletion(
     active = true;
     const visible = matches.slice(0, MAX_VISIBLE);
     const out = process.stdout;
-
-    let buf = SAVE_CURSOR;
+    const cols = typeof rl.getCursorPos === "function" ? rl.getCursorPos().cols : 0;
+    const lines: string[] = [];
     for (let i = 0; i < visible.length; i++) {
       const entry = visible[i] as CompletionEntry;
       const isSelected = i === selectedIndex;
@@ -83,16 +91,19 @@ export function attachSlashCompletion(
       const name = isSelected ? `${BOLD}${entry.text}${RESET}` : entry.text;
       const alias = entry.aliasOf ? `${DIM} → /${entry.aliasOf}${RESET}` : "";
       const desc = `${DIM}${entry.description}${RESET}`;
-      buf += `\n${CLEAR_LINE}  ${pointer} ${name}${alias}  ${desc}`;
+      lines.push(`  ${pointer} ${name}${alias}  ${desc}`);
     }
     if (matches.length > MAX_VISIBLE) {
-      buf += `\n${CLEAR_LINE}  ${DIM}  … ${matches.length - MAX_VISIBLE} more${RESET}`;
-      renderedLines = visible.length + 1;
-    } else {
-      renderedLines = visible.length;
+      lines.push(`  ${DIM}  … ${matches.length - MAX_VISIBLE} more${RESET}`);
     }
-    buf += RESTORE_CURSOR;
-    out.write(buf);
+
+    for (const line of lines) {
+      out.write(`\n${line}`);
+    }
+
+    renderedLines = lines.reduce((sum, line) => sum + countTerminalRows(line), 0);
+    moveCursor(out, 0, -renderedLines);
+    cursorTo(out, cols);
   }
 
   function update(): void {

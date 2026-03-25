@@ -43,7 +43,7 @@ describe("Slash Completion", () => {
     await flushMicrotasks();
 
     expect(initialConsumed).toBe(false);
-    expect(writes.length).toBe(1);
+    expect(writes.join("")).toContain("/help");
 
     // Second keypress should clear the existing menu before rebuilding it.
     rl.line = "/p";
@@ -53,9 +53,9 @@ describe("Slash Completion", () => {
     await flushMicrotasks();
 
     expect(nextConsumed).toBe(false);
-    expect(writes.length).toBe(3);
-    expect(writes[1]).toContain("\x1b[2K");
-    expect(writes[2]).toContain("/pipeline");
+    const output = writes.join("");
+    expect(output).toContain("\x1b[2K");
+    expect(output).toContain("/pipeline");
 
     completion.destroy();
   });
