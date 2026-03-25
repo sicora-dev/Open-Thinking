@@ -100,7 +100,7 @@ export function resolveApiKey(providerId: string, envVar?: string): string | nul
 
   // 2. Check env var
   if (envVar) {
-    const envKey = (typeof Bun !== "undefined" ? Bun.env[envVar] : process.env[envVar]) ?? null;
+    const envKey = process.env[envVar] ?? null;
     if (envKey) return envKey;
   }
 

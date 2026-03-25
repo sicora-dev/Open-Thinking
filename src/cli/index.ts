@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * OpenThinking CLI — Entry point.
  *
@@ -18,7 +17,7 @@ const program = new Command();
 
 program
   .name("openthk")
-  .description("AI pipeline orchestrator for development teams")
+  .description("Multi-LLM agent orchestration framework")
   .version("0.1.0");
 
 registerInitCommand(program);

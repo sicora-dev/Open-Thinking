@@ -1,25 +1,26 @@
 {
   "name": "openthk",
   "version": "0.1.0",
-  "description": "Open-source AI pipeline orchestrator for development teams",
+  "description": "The first multi-LLM agent orchestration framework for building pipelines, orchestrators, and collaborative AI workflows",
   "type": "module",
   "bin": {
-    "openthk": "./src/cli/index.ts"
+    "openthk": "./dist/cli/index.cjs"
   },
   "files": [
-    "src/",
-    "!src/**/*.test.ts",
+    "dist/",
     "examples/",
     "openthk.pipeline.yaml"
   ],
   "scripts": {
     "dev": "bun run src/cli/index.ts",
-    "build": "bun build src/cli/index.ts --compile --outfile dist/openthk",
+    "build": "node scripts/build-cli.mjs",
+    "build:binary": "bun build src/cli/index.ts --compile --outfile dist/openthk",
     "test": "bun test",
     "lint": "bunx @biomejs/biome check src/",
     "format": "bunx @biomejs/biome format --write src/",
     "typecheck": "bunx tsc --noEmit",
-    "prepublishOnly": "bun run typecheck && bun run test"
+    "prepack": "bun run build",
+    "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "dependencies": {
     "commander": "^13.1.0",
@@ -37,13 +38,14 @@
     "typescript": "^5.7.0"
   },
   "engines": {
+    "node": ">=20",
     "bun": ">=1.1.0"
   },
-  "os": ["darwin", "linux", "win32"],
+  "os": ["darwin", "linux"],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/openthinking"
+    "url": "https://github.com/sicora-dev/Open-Thinking/"
   },
   "keywords": [
     "ai",
@@ -53,6 +55,7 @@
     "multi-agent",
     "cli",
     "bun",
-    "agents"
+    "agents",
+    "multi-llm"
   ]
 }

@@ -1,11 +1,32 @@
 /**
  * SQLite-backed context store with namespaced keys, TTL, and policy-aware access.
- * Uses bun:sqlite (Bun's built-in SQLite driver).
+ * Uses bun:sqlite in Bun-powered development/tests and better-sqlite3 in the
+ * published Node CLI so installs from npm, pnpm, or bun all work.
  */
-import { Database } from "bun:sqlite";
+import { createRequire } from "node:module";
 import { ContextError } from "../../shared/errors";
 import { type Result, err, ok } from "../../shared/result";
 import type { ContextEntry, ContextStore } from "../../shared/types";
+
+type SQLiteStatement = {
+  get(params?: Record<string, unknown>): unknown;
+  all(params?: Record<string, unknown>): unknown[];
+  run(params?: Record<string, unknown>): unknown;
+};
+
+type SQLiteDatabase = {
+  prepare(sql: string): SQLiteStatement;
+  close(): void;
+};
+
+type SQLiteDatabaseConstructor = new (path: string) => SQLiteDatabase;
+
+const runtimeRequire = createRequire(import.meta.url);
+const Database = (
+  process.versions.bun
+    ? runtimeRequire("bun:sqlite").Database
+    : runtimeRequire("better-sqlite3")
+) as SQLiteDatabaseConstructor;
 
 export type ContextStoreConfig = {
   /** Path to SQLite database file. Use ":memory:" for in-memory store. */
@@ -72,8 +93,8 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
 } {
   const { dbPath, defaultTtlMs } = config;
   const db = new Database(dbPath);
-  db.run("PRAGMA journal_mode = WAL");
-  db.run(CREATE_TABLE_SQL);
+  db.prepare("PRAGMA journal_mode = WAL").run();
+  db.prepare(CREATE_TABLE_SQL).run();
 
   const stmtUpsert = db.prepare(UPSERT_SQL);
   const stmtSelect = db.prepare(SELECT_SQL);

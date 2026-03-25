@@ -1,6 +1,8 @@
 # OpenThinking
 
-Open-source CLI framework for orchestrating multi-LLM pipelines. Define stages in YAML, assign a different model to each one, and let them collaborate through a shared context store with access policies and reusable skills.
+**The first multi-LLM agent orchestration framework for building pipelines, orchestrators, and collaborative AI workflows.**
+
+Build multi-LLM systems with shared context, access policies, and reusable skills across any provider.
 
 ```yaml
 # openthk.pipeline.yaml
@@ -84,23 +86,33 @@ stages:
 - **Declarative policies** — Rate limits, cost caps, and audit logging defined in the pipeline YAML.
 - **Provider resilience** — Exponential backoff with jitter, token-bucket rate limiting, model fallback chains on rate limit exhaustion.
 - **Interactive REPL** — Run `openthk` to open an interactive shell with slash commands, tab completion, and natural language pipeline execution.
-- **Single binary distribution** — Compiles to a standalone binary via `bun build --compile`.
+- **Package-manager friendly CLI** — Install with `npm`, `pnpm`, or `bun`. Optionally compile a standalone binary for local distribution.
 
 ## Requirements
 
-- [Bun](https://bun.sh) >= 1.1.0
+- Node.js >= 20
+- macOS or Linux
+- [Bun](https://bun.sh) >= 1.1.0 for local development and release builds
 
 ## Installation
 
 ```bash
-# From npm
+# Global install
 bun install -g openthk
+npm install -g openthk
+pnpm add -g openthk
 
-# Or clone and build from source
-git clone https://github.com/nicosicora/openthinking
-cd openthinking
+# One-shot execution
+bunx openthk --help
+npx openthk --help
+pnpm dlx openthk --help
+
+# From source
+git clone https://github.com/sicora-dev/Open-Thinking.git
+cd Open-Thinking
 bun install
-bun run build    # outputs dist/openthk
+bun run build         # npm package CLI -> dist/cli/index.cjs
+bun run build:binary  # optional standalone binary -> dist/openthk
 ```
 
 ## Quick Start
@@ -878,8 +890,12 @@ bun run lint
 # Format
 bun run format
 
-# Build standalone binary
+# Build npm package CLI
 bun run build
+# → dist/cli/index.cjs
+
+# Optional standalone binary
+bun run build:binary
 # → dist/openthk
 ```
 

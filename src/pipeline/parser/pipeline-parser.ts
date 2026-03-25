@@ -31,7 +31,7 @@ import type { PipelineConfig, PipelineMode, ResolvedProvider } from "../../share
 /** Interpolate ${ENV_VAR} references in a string */
 const interpolateEnvVars = (value: string): string =>
   value.replace(/\$\{([^}]+)\}/g, (_, varName: string) => {
-    const envValue = typeof Bun !== "undefined" ? Bun.env[varName] : process.env[varName];
+    const envValue = process.env[varName];
     if (!envValue) {
       throw new PipelineError(`Environment variable "${varName}" is not set.`, "PARSE_ERROR", {
         variable: varName,
