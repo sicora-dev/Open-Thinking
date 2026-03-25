@@ -6,13 +6,20 @@
   "bin": {
     "openthk": "./src/cli/index.ts"
   },
+  "files": [
+    "src/",
+    "!src/**/*.test.ts",
+    "examples/",
+    "openthk.pipeline.yaml"
+  ],
   "scripts": {
     "dev": "bun run src/cli/index.ts",
     "build": "bun build src/cli/index.ts --compile --outfile dist/openthk",
     "test": "bun test",
     "lint": "bunx @biomejs/biome check src/",
     "format": "bunx @biomejs/biome format --write src/",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun run test"
   },
   "dependencies": {
     "commander": "^13.1.0",
@@ -30,9 +37,9 @@
     "typescript": "^5.7.0"
   },
   "engines": {
-    "bun": ">=1.1.0",
-    "node": ">=20.0.0"
+    "bun": ">=1.1.0"
   },
+  "os": ["darwin", "linux", "win32"],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -44,6 +51,8 @@
     "orchestrator",
     "pipeline",
     "multi-agent",
-    "cli"
+    "cli",
+    "bun",
+    "agents"
   ]
 }
