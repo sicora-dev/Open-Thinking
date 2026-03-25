@@ -42,7 +42,7 @@ function stateWithPipeline(): ReplState {
       },
       policies: { global: {} },
     },
-    pipelinePath: "/tmp/test-project/openmind.pipeline.yaml",
+    pipelinePath: "/tmp/test-project/openthk.pipeline.yaml",
   };
 }
 

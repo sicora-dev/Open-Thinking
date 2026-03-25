@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * OpenMind CLI — Entry point.
+ * OpenThinking CLI — Entry point.
  *
- * Running `openmind` with no arguments opens the interactive REPL.
- * Subcommands like `openmind init` run as one-shot commands.
+ * Running `openthk` with no arguments opens the interactive REPL.
+ * Subcommands like `openthk init` run as one-shot commands.
  */
 
 import { Command } from "commander";
@@ -17,7 +17,7 @@ import { startRepl } from "./repl";
 const program = new Command();
 
 program
-  .name("openmind")
+  .name("openthk")
   .description("AI pipeline orchestrator for development teams")
   .version("0.1.0");
 

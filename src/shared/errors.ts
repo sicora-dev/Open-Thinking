@@ -1,4 +1,4 @@
-/** Custom error types for OpenMind. Each module has its own error type. */
+/** Custom error types for OpenThinking. Each module has its own error type. */
 
 export class PipelineError extends Error {
   constructor(

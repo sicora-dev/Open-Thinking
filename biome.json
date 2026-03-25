@@ -21,6 +21,6 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".openmind"]
+    "ignore": ["node_modules", "dist", ".openthk"]
   }
 }

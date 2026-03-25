@@ -27,26 +27,26 @@ import {
 } from "./workspace";
 
 function makeTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "openmind-ws-test-"));
+  return mkdtempSync(join(tmpdir(), "openthk-ws-test-"));
 }
 
 describe("workspace", () => {
   // ─── initProjectWorkspace ────────────────────────────────
 
-  test("creates .openmind/ directory structure", () => {
+  test("creates .openthk/ directory structure", () => {
     const dir = makeTempDir();
     const result = initProjectWorkspace(dir);
 
     expect(result).toBe(true);
-    expect(existsSync(join(dir, ".openmind"))).toBe(true);
-    expect(existsSync(join(dir, ".openmind", "stages"))).toBe(true);
-    expect(existsSync(join(dir, ".openmind", "history"))).toBe(true);
-    expect(existsSync(join(dir, ".openmind", "learned"))).toBe(true);
-    expect(existsSync(join(dir, ".openmind", "project.md"))).toBe(true);
-    expect(existsSync(join(dir, ".openmind", ".gitignore"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk", "stages"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk", "history"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk", "learned"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk", "project.md"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk", ".gitignore"))).toBe(true);
   });
 
-  test("returns false if .openmind/ already exists", () => {
+  test("returns false if .openthk/ already exists", () => {
     const dir = makeTempDir();
     initProjectWorkspace(dir);
     const result = initProjectWorkspace(dir);
@@ -208,13 +208,13 @@ describe("workspace", () => {
   test("initProjectWorkspace creates pipelines/ directory", () => {
     const dir = makeTempDir();
     initProjectWorkspace(dir);
-    expect(existsSync(join(dir, ".openmind", "pipelines"))).toBe(true);
+    expect(existsSync(join(dir, ".openthk", "pipelines"))).toBe(true);
   });
 
   test(".gitignore includes active-pipeline", () => {
     const dir = makeTempDir();
     initProjectWorkspace(dir);
-    const gitignore = readFileSync(join(dir, ".openmind", ".gitignore"), "utf-8");
+    const gitignore = readFileSync(join(dir, ".openthk", ".gitignore"), "utf-8");
     expect(gitignore).toContain("active-pipeline");
   });
 
@@ -229,8 +229,8 @@ describe("workspace", () => {
   test("listAvailablePipelines returns project pipelines", () => {
     const dir = makeTempDir();
     initProjectWorkspace(dir);
-    writeFileSync(join(dir, ".openmind", "pipelines", "dev-flow.yaml"), "name: dev-flow\n");
-    writeFileSync(join(dir, ".openmind", "pipelines", "review.yaml"), "name: review\n");
+    writeFileSync(join(dir, ".openthk", "pipelines", "dev-flow.yaml"), "name: dev-flow\n");
+    writeFileSync(join(dir, ".openthk", "pipelines", "review.yaml"), "name: review\n");
 
     const pipelines = listAvailablePipelines(dir);
     const projectPipelines = pipelines.filter((p) => p.origin === "project");
@@ -262,7 +262,7 @@ describe("workspace", () => {
   test("findPipelineConflicts returns matching entries", () => {
     const dir = makeTempDir();
     initProjectWorkspace(dir);
-    writeFileSync(join(dir, ".openmind", "pipelines", "dev-flow.yaml"), "name: dev-flow\n");
+    writeFileSync(join(dir, ".openthk", "pipelines", "dev-flow.yaml"), "name: dev-flow\n");
 
     const conflicts = findPipelineConflicts(dir, "dev-flow");
     expect(conflicts.length).toBe(1);
@@ -278,7 +278,7 @@ describe("workspace", () => {
   test("resolvePipelinePath resolves single pipeline", () => {
     const dir = makeTempDir();
     initProjectWorkspace(dir);
-    const yamlPath = join(dir, ".openmind", "pipelines", "dev-flow.yaml");
+    const yamlPath = join(dir, ".openthk", "pipelines", "dev-flow.yaml");
     writeFileSync(yamlPath, "name: dev-flow\n");
 
     const result = resolvePipelinePath(dir, "dev-flow");

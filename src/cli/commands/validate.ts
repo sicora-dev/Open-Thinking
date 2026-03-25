@@ -1,5 +1,5 @@
 /**
- * `openmind validate` — Validate a pipeline YAML file.
+ * `openthk validate` — Validate a pipeline YAML file.
  */
 import type { Command } from "commander";
 import { parsePipeline } from "../../pipeline/parser";
@@ -8,7 +8,7 @@ export function registerValidateCommand(program: Command): void {
   program
     .command("validate")
     .description("Validate pipeline YAML configuration")
-    .option("-f, --file <path>", "Pipeline file path", "openmind.pipeline.yaml")
+    .option("-f, --file <path>", "Pipeline file path", "openthk.pipeline.yaml")
     .action(async (options: { file: string }) => {
       console.log(`Validating: ${options.file}\n`);
 

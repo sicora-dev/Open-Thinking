@@ -1,14 +1,14 @@
 {
-  "name": "openmind",
+  "name": "openthk",
   "version": "0.1.0",
   "description": "Open-source AI pipeline orchestrator for development teams",
   "type": "module",
   "bin": {
-    "openmind": "./src/cli/index.ts"
+    "openthk": "./src/cli/index.ts"
   },
   "scripts": {
     "dev": "bun run src/cli/index.ts",
-    "build": "bun build src/cli/index.ts --compile --outfile dist/openmind",
+    "build": "bun build src/cli/index.ts --compile --outfile dist/openthk",
     "test": "bun test",
     "lint": "bunx @biomejs/biome check src/",
     "format": "bunx @biomejs/biome format --write src/",
@@ -36,7 +36,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/openmind"
+    "url": "https://github.com/your-org/openthinking"
   },
   "keywords": [
     "ai",

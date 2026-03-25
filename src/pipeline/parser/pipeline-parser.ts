@@ -1,6 +1,6 @@
 /**
  * Pipeline YAML parser.
- * Reads and validates openmind.pipeline.yaml files.
+ * Reads and validates openthk.pipeline.yaml files.
  *
  * Providers in the YAML are declared as a simple list of names:
  *   providers:
@@ -10,7 +10,7 @@
  *
  * The parser resolves each name to a full provider config using the
  * provider catalog (base_url, type) and global config (API keys from
- * ~/.openmind/providers.json). Users never need to specify type,
+ * ~/.openthk/providers.json). Users never need to specify type,
  * base_url, or api_key in the YAML — it's all inferred.
  *
  * For custom providers not in the catalog:
@@ -354,7 +354,7 @@ const detectCircularDeps = (
  *
  * @param filePath - Path to the YAML file
  * @param resolveKeys - Whether to resolve API keys from global config (default: true).
- *                      Set to false for validation-only (e.g., `openmind validate`).
+ *                      Set to false for validation-only (e.g., `openthk validate`).
  */
 export const parsePipeline = async (
   filePath: string,

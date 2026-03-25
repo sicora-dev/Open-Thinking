@@ -1,5 +1,5 @@
 /**
- * Core type definitions for OpenMind.
+ * Core type definitions for OpenThinking.
  * All types used across modules are defined here.
  */
 
@@ -28,7 +28,7 @@ export type ContextConfig = {
 /**
  * Resolved provider configuration (internal, after parsing).
  * Users don't write these fields in YAML — they're inferred from the provider
- * catalog and global config (~/.openmind/providers.json).
+ * catalog and global config (~/.openthk/providers.json).
  *
  * In the pipeline YAML, providers are declared as a simple list:
  *   providers:

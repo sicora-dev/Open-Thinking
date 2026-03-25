@@ -206,13 +206,13 @@ const commands: SlashCommand[] = [
         const lines: string[] = [];
 
         if (projectPipelines.length > 0) {
-          lines.push("  Project (.openmind/pipelines/)");
+          lines.push("  Project (.openthk/pipelines/)");
           for (const p of projectPipelines) lines.push(formatEntry(p));
         }
 
         if (userPipelines.length > 0) {
           if (projectPipelines.length > 0) lines.push("");
-          lines.push("  User (~/.openmind/pipelines/)");
+          lines.push("  User (~/.openthk/pipelines/)");
           for (const p of userPipelines) lines.push(formatEntry(p));
         }
 
@@ -507,7 +507,7 @@ const commands: SlashCommand[] = [
             : " (no key)";
           return `    ${p.id}: ${p.name} @ ${p.baseUrl}${masked}`;
         });
-        return { output: `  Global providers (~/.openmind):\n${lines.join("\n")}` };
+        return { output: `  Global providers (~/.openthk):\n${lines.join("\n")}` };
       }
 
       if (subcommand === "remove" || subcommand === "rm") {
@@ -613,7 +613,7 @@ const commands: SlashCommand[] = [
   {
     name: "exit",
     aliases: ["quit", "q"],
-    description: "Exit OpenMind",
+    description: "Exit OpenThinking",
     async execute() {
       return { output: "Goodbye!", exit: true };
     },

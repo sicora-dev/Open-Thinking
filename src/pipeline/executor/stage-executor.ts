@@ -31,7 +31,7 @@ export type ExecutorDeps = {
   contextStore: ContextStore;
   policyEngine: PolicyEngine;
   eventBus: EventBus;
-  /** Working directory of the project. Used for persistent context (.openmind/). */
+  /** Working directory of the project. Used for persistent context (.openthk/). */
   workingDir: string;
   /** Base directory for resolving skill paths. Defaults to cwd. */
   skillsDir?: string;

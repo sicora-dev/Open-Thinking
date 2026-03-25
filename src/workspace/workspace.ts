@@ -1,7 +1,7 @@
 /**
  * Project workspace management.
  *
- * Manages the `.openmind/` directory in each project and `~/.openmind/` globally.
+ * Manages the `.openthk/` directory in each project and `~/.openthk/` globally.
  * Handles persistent context: project.md, stages/*.md, history/, learned/, user.md.
  * Manages the pipeline registry: pipelines/ in both project and user levels.
  */
@@ -29,20 +29,20 @@ export type UserPreferences = {
 
 // ─── Paths ───────────────────────────────────────────────────
 
-const GLOBAL_DIR = join(homedir(), ".openmind");
+const GLOBAL_DIR = join(homedir(), ".openthk");
 
 export function getGlobalDir(): string {
   return GLOBAL_DIR;
 }
 
 export function getProjectDir(workingDir: string): string {
-  return join(workingDir, ".openmind");
+  return join(workingDir, ".openthk");
 }
 
 // ─── Initialization ──────────────────────────────────────────
 
 /**
- * Ensure the global ~/.openmind/ directory exists with all subdirs.
+ * Ensure the global ~/.openthk/ directory exists with all subdirs.
  */
 export function ensureGlobalWorkspace(): void {
   mkdirSync(join(GLOBAL_DIR, "learned"), { recursive: true });
@@ -84,7 +84,7 @@ function ensureGitignoreEntries(dir: string, entries: string[]): void {
 }
 
 /**
- * Initialize the .openmind/ directory in a project.
+ * Initialize the .openthk/ directory in a project.
  * Returns true if created, false if it already existed.
  */
 export function initProjectWorkspace(workingDir: string): boolean {
@@ -283,15 +283,15 @@ export function purgeOldHistory(workingDir: string, maxAgeDays = 30): number {
 // ─── Build full context for a stage ──────────────────────────
 
 export type StageContext = {
-  /** Global user preferences (~/.openmind/user.md) */
+  /** Global user preferences (~/.openthk/user.md) */
   userPreferences: string | null;
-  /** Project soul (.openmind/project.md) */
+  /** Project soul (.openthk/project.md) */
   projectSoul: string | null;
-  /** Stage-specific instructions (.openmind/stages/<name>.md) */
+  /** Stage-specific instructions (.openthk/stages/<name>.md) */
   stageInstructions: string | null;
-  /** Learned knowledge (.openmind/learned/ + ~/.openmind/learned/) */
+  /** Learned knowledge (.openthk/learned/ + ~/.openthk/learned/) */
   learned: string | null;
-  /** Recent execution history (.openmind/history/) */
+  /** Recent execution history (.openthk/history/) */
   recentHistory: string | null;
 };
 
@@ -441,7 +441,7 @@ function preferencesPath(): string {
 }
 
 /**
- * Load user preferences from ~/.openmind/preferences.json.
+ * Load user preferences from ~/.openthk/preferences.json.
  */
 export function loadUserPreferences(): UserPreferences {
   const path = preferencesPath();
@@ -459,7 +459,7 @@ export function loadUserPreferences(): UserPreferences {
 }
 
 /**
- * Save user preferences to ~/.openmind/preferences.json.
+ * Save user preferences to ~/.openthk/preferences.json.
  */
 export function saveUserPreferences(prefs: UserPreferences): void {
   mkdirSync(GLOBAL_DIR, { recursive: true });

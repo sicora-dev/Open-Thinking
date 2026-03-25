@@ -1,10 +1,10 @@
 /**
- * `openmind context inspect|clear` — Manage the shared context store.
+ * `openthk context inspect|clear` — Manage the shared context store.
  */
 import type { Command } from "commander";
 import { createContextStore } from "../../context/store";
 
-const DEFAULT_DB_PATH = ".openmind/context.db";
+const DEFAULT_DB_PATH = ".openthk/context.db";
 
 export function registerContextCommand(program: Command): void {
   const context = program.command("context").description("Manage shared context store");

@@ -1,6 +1,6 @@
 /**
  * Global configuration management.
- * Stores provider API keys in ~/.openmind/providers.json
+ * Stores provider API keys in ~/.openthk/providers.json
  * so they persist across all projects.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Result, err, ok } from "../shared/result";
 
-const CONFIG_DIR = join(homedir(), ".openmind");
+const CONFIG_DIR = join(homedir(), ".openthk");
 const PROVIDERS_FILE = join(CONFIG_DIR, "providers.json");
 
 export type ProviderEntry = {

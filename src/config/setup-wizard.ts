@@ -231,9 +231,9 @@ async function configureProvider(catalog: CatalogProvider): Promise<boolean> {
  */
 export async function runSetupWizard(): Promise<number> {
   console.log();
-  console.log(`  ${C.bold}${C.cyan}OpenMind — Provider Setup${C.reset}`);
+  console.log(`  ${C.bold}${C.cyan}OpenThinking — Provider Setup${C.reset}`);
   console.log(`  ${C.dim}Configure the LLM providers you want to use.${C.reset}`);
-  console.log(`  ${C.dim}API keys are stored in ~/.openmind/providers.json${C.reset}`);
+  console.log(`  ${C.dim}API keys are stored in ~/.openthk/providers.json${C.reset}`);
 
   const config = loadGlobalConfig();
   const configuredIds = new Set(Object.keys(config.providers));

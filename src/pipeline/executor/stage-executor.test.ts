@@ -71,7 +71,7 @@ function makeDeps(
     contextStore: store,
     policyEngine: policyResult.value,
     eventBus: createEventBus(),
-    workingDir: mkdtempSync(join(tmpdir(), "openmind-test-")),
+    workingDir: mkdtempSync(join(tmpdir(), "openthk-test-")),
   };
 }
 

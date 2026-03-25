@@ -1,5 +1,5 @@
 /**
- * Structured logger for OpenMind.
+ * Structured logger for OpenThinking.
  * Outputs JSON in production, pretty-printed in development.
  */
 

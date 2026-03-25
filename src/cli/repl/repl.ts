@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 /**
- * Interactive REPL shell for OpenMind.
- * Opens when you run `openmind` — like Claude Code or Codex.
+ * Interactive REPL shell for OpenThinking.
+ * Opens when you run `openthk` — like Claude Code or Codex.
  */
 import * as readline from "node:readline";
 import { checkFirstRun, listProviders } from "../../config";
@@ -51,13 +51,13 @@ const getSeparator = () => c("dim", "─".repeat(process.stdout.columns || 80));
 
 function printBanner(state: ReplState, globalProviderCount = 0, hasWorkspace = false): void {
   console.log();
-  console.log(`  ${c("bold", c("cyan", `OpenMind v${VERSION}`))}`);
+  console.log(`  ${c("bold", c("cyan", `OpenThinking v${VERSION}`))}`);
   console.log(`  ${c("dim", "AI Pipeline Orchestrator")}`);
   console.log();
 
   if (globalProviderCount > 0) {
     console.log(
-      `  ${c("green", "●")} ${globalProviderCount} provider${globalProviderCount !== 1 ? "s" : ""} configured ${c("dim", "(~/.openmind)")}`,
+      `  ${c("green", "●")} ${globalProviderCount} provider${globalProviderCount !== 1 ? "s" : ""} configured ${c("dim", "(~/.openthk)")}`,
     );
   } else {
     console.log(
@@ -68,7 +68,7 @@ function printBanner(state: ReplState, globalProviderCount = 0, hasWorkspace = f
   if (hasWorkspace) {
     const soul = readProjectSoul(state.workingDir);
     const soulStatus = soul ? c("green", "●") : c("dim", "○");
-    console.log(`  ${soulStatus} Project workspace ${c("dim", "(.openmind/)")}`);
+    console.log(`  ${soulStatus} Project workspace ${c("dim", "(.openthk/)")}`);
   }
 
   if (state.pipelineConfig) {
@@ -134,8 +134,8 @@ async function resolvePipelineOnStartup(workingDir: string): Promise<Partial<Rep
 
   // 3. Fallback: auto-detect YAML in working directory (backward compat)
   const candidates = [
-    "openmind.pipeline.yaml",
-    "openmind.pipeline.yml",
+    "openthk.pipeline.yaml",
+    "openthk.pipeline.yml",
     "pipeline.yaml",
     "pipeline.yml",
   ];
@@ -438,7 +438,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
     skillsDir: null,
   };
 
-  // First-run: ensure global ~/.openmind/ exists
+  // First-run: ensure global ~/.openthk/ exists
   ensureGlobalWorkspace();
   await checkFirstRun();
 

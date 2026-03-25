@@ -1,5 +1,5 @@
 /**
- * `openmind run` — Execute a pipeline.
+ * `openthk run` — Execute a pipeline.
  */
 import { dirname, resolve } from "node:path";
 import type { Command } from "commander";
@@ -32,7 +32,7 @@ export function registerRunCommand(program: Command): void {
       if (!options.input) {
         console.error("Error: --input is required. Tell the pipeline what to do.");
         console.error(
-          '  Example: openmind run -p pipeline.yaml -i "Build a REST API for a todo app"',
+          '  Example: openthk run -p pipeline.yaml -i "Build a REST API for a todo app"',
         );
         process.exit(1);
       }

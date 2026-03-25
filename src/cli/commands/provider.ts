@@ -1,5 +1,5 @@
 /**
- * `openmind provider add|list|test` — Manage LLM providers.
+ * `openthk provider add|list|test` — Manage LLM providers.
  */
 import type { Command } from "commander";
 import { parsePipeline } from "../../pipeline/parser";
@@ -11,7 +11,7 @@ export function registerProviderCommand(program: Command): void {
   provider
     .command("list")
     .description("List providers from pipeline config")
-    .option("-f, --file <path>", "Pipeline file path", "openmind.pipeline.yaml")
+    .option("-f, --file <path>", "Pipeline file path", "openthk.pipeline.yaml")
     .action(async (options: { file: string }) => {
       const result = await parsePipeline(options.file, false);
       if (!result.ok) {
@@ -39,7 +39,7 @@ export function registerProviderCommand(program: Command): void {
     .command("test")
     .description("Test provider connection")
     .argument("<name>", "Provider name to test")
-    .option("-f, --file <path>", "Pipeline file path", "openmind.pipeline.yaml")
+    .option("-f, --file <path>", "Pipeline file path", "openthk.pipeline.yaml")
     .action(async (name: string, options: { file: string }) => {
       const parseResult = await parsePipeline(options.file);
       if (!parseResult.ok) {
