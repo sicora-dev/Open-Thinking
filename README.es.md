@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./logo.png" alt="Logo de OpenThinking" width="180" />
+  <img src="./logo_dark.png" alt="Logo de OpenThinking" width="180" />
 </p>
 
 <h1 align="center">OpenThinking</h1>
