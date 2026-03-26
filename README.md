@@ -1,8 +1,43 @@
-# OpenThinking
+<p align="center">
+  <img src="./logo.png" alt="OpenThinking logo" width="180" />
+</p>
 
-**The first multi-LLM agent orchestration framework for building pipelines, orchestrators, and collaborative AI workflows.**
+<h1 align="center">OpenThinking</h1>
 
-Build multi-LLM systems with shared context, access policies, and reusable skills across any provider.
+<p align="center">
+  The first multi-LLM agent orchestration framework for building pipelines, orchestrators, and collaborative AI workflows.
+</p>
+
+<p align="center">
+  Build multi-LLM systems with shared context, access policies, and reusable skills across any provider.
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/openthk">
+    <img src="https://img.shields.io/npm/v/openthk" alt="npm version" />
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT License" />
+  </a>
+  <a href="https://nodejs.org/">
+    <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node >= 20" />
+  </a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-1f6feb" alt="macOS and Linux" />
+</p>
+
+<p align="center">
+  <a href="#installation">Install</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#features">Features</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="https://github.com/sicora-dev/Open-Thinking">Repository</a>
+</p>
+
+<p align="center">
+  English • <a href="./README.es.md">Español</a> • <a href="./README.fr.md">Français</a>
+</p>
+
+---
 
 ```yaml
 # openthk.pipeline.yaml
