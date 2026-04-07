@@ -19,6 +19,7 @@ import {
   createListFilesTool,
   createReadFileTool,
   createRunCommandTool,
+  type ToolSessionState,
   createSearchFilesTool,
   createWriteFileTool,
 } from "./built-in-tools";
@@ -54,13 +55,14 @@ export function createToolRegistry(
   allowedTools?: string[],
   contextAccess?: ContextAccess,
 ): ToolRegistry {
+  const session: ToolSessionState = { fsEpoch: 0 };
   const tools = new Map<string, ToolFunction>();
 
   const builtins: ToolFunction[] = [
-    createReadFileTool(workingDir),
-    createWriteFileTool(workingDir),
-    createListFilesTool(workingDir),
-    createRunCommandTool(workingDir),
+    createReadFileTool(workingDir, session),
+    createWriteFileTool(workingDir, session),
+    createListFilesTool(workingDir, session),
+    createRunCommandTool(workingDir, session),
     createSearchFilesTool(workingDir),
   ];
 

@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 /**
  * Interactive REPL shell for OpenThinking.
@@ -9,7 +8,6 @@ import { checkFirstRun, listProviders } from "../../config";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
-import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
 import { createPersistedRunTracker } from "../../runs/persistence";
@@ -19,15 +17,10 @@ import { maybeAutostartUi } from "../../ui/autostart";
 import { VERSION } from "../../version";
 import {
   ensureGlobalWorkspace,
-  getActivePipelineName,
   getProjectDir,
   hasProjectWorkspace,
-  initProjectWorkspace,
   listAvailablePipelines,
-  purgeOldHistory,
   readProjectSoul,
-  resolvePipelinePath,
-  setActivePipeline,
   writeHistoryEntry,
 } from "../../workspace";
 import {
@@ -38,6 +31,7 @@ import {
 } from "./slash-commands";
 import { type KeypressEvent, attachSlashCompletion } from "./slash-completion";
 import { createTokenMeter } from "./token-meter";
+import { loadWorkspaceSessionState } from "./workspace-session";
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -94,73 +88,6 @@ function printBanner(state: ReplState, globalProviderCount = 0, hasWorkspace = f
     );
   }
   console.log();
-}
-
-/**
- * Resolve which pipeline to load on startup.
- *
- * Resolution order:
- * 1. active-pipeline file → load that pipeline by name
- * 2. Single pipeline available → use it and set as active
- * 3. Multiple pipelines → don't auto-pick, let user choose
- * 4. Fallback: auto-detect *.pipeline.yaml in working directory (backward compat)
- * 5. Nothing found → no pipeline loaded
- */
-async function resolvePipelineOnStartup(workingDir: string): Promise<Partial<ReplState>> {
-  // 1. Check active-pipeline pointer
-  const activeName = getActivePipelineName(workingDir);
-  if (activeName) {
-    const resolved = resolvePipelinePath(workingDir, activeName);
-    if (resolved && !("conflict" in resolved)) {
-      const result = await parsePipeline(resolved.path);
-      if (result.ok) {
-        return { pipelineConfig: result.value, pipelinePath: resolved.path };
-      }
-    }
-    // If conflict or parse error, fall through
-  }
-
-  // 2. Check available pipelines in registry
-  const available = listAvailablePipelines(workingDir);
-  const uniqueNames = [...new Set(available.map((p) => p.name))];
-
-  if (uniqueNames.length === 1 && available.length === 1) {
-    // Single pipeline — use it and set as active
-    const entry = available[0]!;
-    const result = await parsePipeline(entry.path);
-    if (result.ok) {
-      setActivePipeline(workingDir, entry.name);
-      return { pipelineConfig: result.value, pipelinePath: entry.path };
-    }
-  }
-
-  if (available.length > 1) {
-    // Multiple pipelines — show hint, let user choose
-    console.log(
-      `  ${c("dim", `${available.length} pipelines available — use /pipeline list to choose`)}`,
-    );
-    return {};
-  }
-
-  // 3. Fallback: auto-detect YAML in working directory (backward compat)
-  const candidates = [
-    "openthk.pipeline.yaml",
-    "openthk.pipeline.yml",
-    "pipeline.yaml",
-    "pipeline.yml",
-  ];
-
-  for (const candidate of candidates) {
-    const filePath = resolve(workingDir, candidate);
-    if (existsSync(filePath)) {
-      const result = await parsePipeline(filePath);
-      if (result.ok) {
-        return { pipelineConfig: result.value, pipelinePath: filePath };
-      }
-    }
-  }
-
-  return {};
 }
 
 /**
@@ -494,16 +421,14 @@ export async function startRepl(workingDir?: string): Promise<void> {
   await maybeAutostartUi();
 
   // Resolve which pipeline to load
-  const detected = await resolvePipelineOnStartup(cwd);
+  const detected = await loadWorkspaceSessionState(cwd);
   Object.assign(state, detected);
 
-  if (state.pipelineConfig && !hasProjectWorkspace(cwd)) {
-    initProjectWorkspace(cwd);
-  }
-
-  // Purge old history entries (>30 days)
-  if (hasProjectWorkspace(cwd)) {
-    purgeOldHistory(cwd);
+  const available = listAvailablePipelines(state.workingDir);
+  if (!state.pipelineConfig && available.length > 1) {
+    console.log(
+      `  ${c("dim", `${available.length} pipelines available — use /pipeline list to choose`)}`,
+    );
   }
 
   // Show configured providers count in banner

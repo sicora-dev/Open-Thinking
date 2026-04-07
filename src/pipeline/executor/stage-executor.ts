@@ -656,7 +656,9 @@ async function executeStageWithDelegateTool(
     model: stageDef.model,
     messages: [{
       role: "user",
-      content: contextBlock ? `Complete your task based on the following context.${contextBlock}` : "Complete your task.",
+      content: contextBlock
+        ? `You must delegate the work to one of the available agents before you can conclude.\n\nComplete your task based on the following context.${contextBlock}`
+        : "You must delegate the work to one of the available agents before you can conclude.\n\nComplete your task.",
     }],
     systemPrompt,
     maxTokens: stageDef.max_tokens ?? 16384,
@@ -678,6 +680,7 @@ async function executeStageWithDelegateTool(
     initialPersistentContextBytes: persistentBytes,
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit ? (summary) => deps.onTokenLimit!(stageName, summary) : undefined,
+    requireToolCallOnFirstIteration: true,
   });
 
   if (!loopResult.ok) {

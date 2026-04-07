@@ -55,6 +55,8 @@ export type AgentLoopConfig = {
    * If not provided, the loop stops on token limit.
    */
   onTokenLimit?: (summary: WorkSummary) => Promise<boolean>;
+  /** Force the first model response to be a tool call when tools are available. */
+  requireToolCallOnFirstIteration?: boolean;
 };
 
 export type WorkSummary = {
@@ -370,6 +372,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
     // Build messages: refreshed task + working memory + last exchange only
     const currentMessages = [buildTaskMessage(originalTask, memory), ...lastExchange];
+    const availableTools = isFinalIteration ? [] : registry.definitions();
 
     // On wind-down, inject a warning
     if (isWindDown) {
@@ -389,7 +392,13 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       systemPrompt,
       messages: currentMessages,
       // Final iteration: no tools — force a text summary
-      tools: isFinalIteration ? [] : registry.definitions(),
+      tools: availableTools,
+      toolChoice:
+        availableTools.length === 0
+          ? undefined
+          : config.requireToolCallOnFirstIteration && i === 0
+            ? "required"
+            : request.toolChoice,
       signal,
     });
     eventBus.emit({ type: "thinking:end", stageName });
@@ -593,4 +602,3 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
     workSummary,
   });
 }
-

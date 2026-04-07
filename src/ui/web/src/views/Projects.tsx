@@ -40,22 +40,23 @@ export function Projects() {
   };
 
   return (
-    <div className="p-6">
-      <header className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-lg font-medium">Projects</h1>
-          <p className="text-xs text-ink-400 mt-0.5">
-            Registered project roots. Each project manages its own <code>.openthk/pipelines</code> and <code>.openthk/pipelines/skills</code>.
-          </p>
-        </div>
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-5">
+        <p className="text-xs text-ink-400">
+          Each project manages its own <code className="text-ink-300">.openthk/pipelines</code>
+        </p>
         <button className="btn-accent" onClick={() => setShowAdd(true)}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
           Add project
         </button>
-      </header>
+      </div>
 
       {error && <div className="panel p-3 text-red-400 text-sm mb-4">{error}</div>}
 
-      <div className="panel">
+      <div className="panel overflow-hidden">
         {projects.length === 0 ? (
           <EmptyState
             title="No projects registered"
@@ -68,28 +69,32 @@ export function Projects() {
           />
         ) : (
           <table className="w-full text-sm">
-            <thead className="text-left text-ink-400">
-              <tr className="border-b border-ink-700">
-                <th className="px-4 py-2 font-normal">Name</th>
-                <th className="px-4 py-2 font-normal">Path</th>
-                <th className="px-4 py-2 font-normal">Pipelines</th>
-                <th className="px-4 py-2 font-normal">Skills</th>
-                <th className="px-4 py-2" />
+            <thead>
+              <tr className="border-b border-ink-700/50 bg-ink-900/40">
+                <th className="px-4 py-3 text-left label">Name</th>
+                <th className="px-4 py-3 text-left label">Path</th>
+                <th className="px-4 py-3 text-right label">Pipelines</th>
+                <th className="px-4 py-3 text-right label">Skills</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {projects.map((project) => (
-                <tr key={project.id} className="border-b border-ink-700/50">
-                  <td className="px-4 py-2">{project.name}</td>
-                  <td className="px-4 py-2 text-ink-400 font-mono text-xs truncate max-w-md">{project.path}</td>
-                  <td className="px-4 py-2 text-ink-400">{project.pipelinesCount}</td>
-                  <td className="px-4 py-2 text-ink-400">{project.skillsCount}</td>
-                  <td className="px-4 py-2">
-                    <div className="flex gap-2 justify-end">
-                      <button className="btn !py-1 !px-2" onClick={() => (window.location.hash = `#/projects/${project.id}`)}>
+                <tr
+                  key={project.id}
+                  className="border-b border-ink-700/30 last:border-0 hover:bg-ink-800/30 transition-colors cursor-pointer"
+                  onClick={() => (window.location.hash = `#/projects/${project.id}`)}
+                >
+                  <td className="px-4 py-3 font-medium text-ink-100">{project.name}</td>
+                  <td className="px-4 py-3 text-ink-400 font-mono text-xs truncate max-w-md" title={project.path}>{project.path}</td>
+                  <td className="px-4 py-3 text-right text-xs font-mono text-ink-300">{project.pipelinesCount}</td>
+                  <td className="px-4 py-3 text-right text-xs font-mono text-ink-300">{project.skillsCount}</td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-1.5 justify-end">
+                      <button className="btn-ghost !px-2.5 !py-1 !text-xs" onClick={() => (window.location.hash = `#/projects/${project.id}`)}>
                         Open
                       </button>
-                      <button className="btn !py-1 !px-2" onClick={() => removeProject(project)}>
+                      <button className="btn-ghost !px-2.5 !py-1 !text-xs hover:!text-red-400" onClick={() => removeProject(project)}>
                         Remove
                       </button>
                     </div>

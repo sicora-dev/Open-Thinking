@@ -2,7 +2,7 @@
  * Slash command definitions and router for the interactive REPL.
  * Commands are prefixed with `/` and handle configuration, inspection, etc.
  */
-import { copyFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
 import { getUiAutostart, setUiAutostart } from "../../config/ui-config";
@@ -31,6 +31,7 @@ import {
   setActivePipeline,
   setPipelineDefault,
 } from "../../workspace";
+import { loadWorkspaceSessionState } from "./workspace-session";
 
 export type ReplState = {
   pipelineConfig: PipelineConfig | null;
@@ -57,6 +58,16 @@ type SlashCommand = {
   usage?: string;
   execute: (args: string, state: ReplState) => Promise<SlashCommandResult>;
 };
+
+function formatWorkspaceView(state: ReplState): string {
+  const lines = [`  Workspace: ${state.workingDir}`];
+  lines.push(`  Project workspace: ${existsSync(getProjectDir(state.workingDir)) ? "yes" : "no"}`);
+  lines.push(`  Active pipeline: ${state.pipelineConfig ? state.pipelineConfig.name : "(none)"}`);
+  if (state.pipelinePath) {
+    lines.push(`  Pipeline path: ${state.pipelinePath}`);
+  }
+  return lines.join("\n");
+}
 
 /**
  * Format a full visual view of the pipeline design.
@@ -154,6 +165,62 @@ function formatPipelineView(cfg: PipelineConfig, state: ReplState): string {
 }
 
 const commands: SlashCommand[] = [
+  {
+    name: "workspace",
+    aliases: ["ws"],
+    description: "Show or switch the current workspace",
+    usage: "[show|switch <path>|<path>]",
+    async execute(args, state) {
+      const raw = args.trim();
+      if (!raw || raw === "show") {
+        return { output: formatWorkspaceView(state) };
+      }
+
+      const targetArg = raw.startsWith("switch ") ? raw.slice("switch ".length).trim() : raw;
+      if (!targetArg) {
+        return { output: "  Usage: /workspace [show|switch <path>|<path>]" };
+      }
+
+      const targetDir = resolve(state.workingDir, targetArg);
+      if (!existsSync(targetDir)) {
+        return { output: `  Directory not found: ${targetDir}` };
+      }
+
+      try {
+        if (!statSync(targetDir).isDirectory()) {
+          return { output: `  Not a directory: ${targetDir}` };
+        }
+      } catch (error) {
+        return { output: `  Could not inspect workspace: ${(error as Error).message}` };
+      }
+
+      const nextState = await loadWorkspaceSessionState(targetDir);
+      const lines = [`  Switched workspace to ${nextState.workingDir}`];
+      if (nextState.pipelineConfig) {
+        lines.push(
+          `  Loaded pipeline: ${nextState.pipelineConfig.name} v${nextState.pipelineConfig.version}`,
+        );
+      } else {
+        const available = listAvailablePipelines(nextState.workingDir);
+        if (available.length > 1) {
+          lines.push(`  ${available.length} pipelines available. Use /pipeline list to choose one.`);
+        } else {
+          lines.push("  No pipeline loaded in this workspace.");
+        }
+      }
+      lines.push(
+        `  Project workspace: ${existsSync(getProjectDir(nextState.workingDir)) ? "yes" : "no"}`,
+      );
+
+      return {
+        output: lines.join("\n"),
+        stateUpdates: {
+          ...nextState,
+          lastRun: undefined,
+        },
+      };
+    },
+  },
   {
     name: "help",
     aliases: ["h", "?"],

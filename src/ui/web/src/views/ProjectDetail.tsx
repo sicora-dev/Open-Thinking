@@ -131,31 +131,32 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           />
         ) : (
           <table className="w-full text-sm">
-            <thead className="text-left text-ink-400">
-              <tr className="border-b border-ink-700">
-                <th className="px-4 py-2 font-normal">Name</th>
-                <th className="px-4 py-2 font-normal">Path</th>
-                <th className="px-4 py-2 font-normal">Last opened</th>
-                <th className="px-4 py-2" />
+            <thead>
+              <tr className="border-b border-ink-700/50 bg-ink-900/40">
+                <th className="px-4 py-3 text-left label">Name</th>
+                <th className="px-4 py-3 text-left label">Path</th>
+                <th className="px-4 py-3 text-left label">Last opened</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {pipelines.map((pipeline) => (
-                <tr key={pipeline.id} className="border-b border-ink-700/50">
-                  <td className="px-4 py-2">{pipeline.name}</td>
-                  <td className="px-4 py-2 text-ink-400 text-xs font-mono truncate max-w-md">{pipeline.path}</td>
-                  <td className="px-4 py-2 text-ink-400 text-xs">
+                <tr
+                  key={pipeline.id}
+                  className="border-b border-ink-700/30 last:border-0 hover:bg-ink-800/30 transition-colors cursor-pointer"
+                  onClick={() => (window.location.hash = `#/pipelines/${pipeline.id}`)}
+                >
+                  <td className="px-4 py-3 font-medium text-ink-100">{pipeline.name}</td>
+                  <td className="px-4 py-3 text-ink-400 text-xs font-mono truncate max-w-md" title={pipeline.path}>{pipeline.path}</td>
+                  <td className="px-4 py-3 text-ink-400 text-xs">
                     {pipeline.lastOpenedAt ? new Date(pipeline.lastOpenedAt).toLocaleString() : "—"}
                   </td>
-                  <td className="px-4 py-2">
-                    <div className="flex gap-2 justify-end">
-                      <button className="btn !py-1 !px-2" onClick={() => (window.location.hash = `#/pipelines/${pipeline.id}`)}>
-                        Edit
-                      </button>
-                      <button className="btn !py-1 !px-2" onClick={() => setRunDialog(pipeline)}>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-1.5 justify-end">
+                      <button className="btn-ghost !px-2.5 !py-1 !text-xs" onClick={() => setRunDialog(pipeline)}>
                         Run
                       </button>
-                      <button className="btn !py-1 !px-2" onClick={() => deletePipeline(pipeline)}>
+                      <button className="btn-ghost !px-2.5 !py-1 !text-xs hover:!text-red-400" onClick={() => deletePipeline(pipeline)}>
                         Delete
                       </button>
                     </div>

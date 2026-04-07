@@ -199,6 +199,69 @@ describe("Base Adapter", () => {
       await adapter.chat(basicRequest);
       expect(capturedHeaders.Authorization).toBe("Bearer test-key");
     });
+
+    test("serializes tool_choice for OpenAI-compatible tool calling", async () => {
+      let capturedBody = "";
+      globalThis.fetch = mock((_url: string, init: RequestInit) => {
+        capturedBody = init.body as string;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "test",
+            model: "gpt-4",
+            choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          }),
+        } as unknown as Response);
+      });
+
+      await adapter.chat({
+        ...basicRequest,
+        tools: [
+          {
+            name: "delegate",
+            description: "Delegate work",
+            parameters: {
+              type: "object",
+              properties: {
+                agent: { type: "string" },
+              },
+            },
+          },
+        ],
+        toolChoice: "required",
+      });
+
+      const parsed = JSON.parse(capturedBody);
+      expect(parsed.tool_choice).toBe("required");
+    });
+
+    test("does not serialize tool_choice when tools are absent", async () => {
+      let capturedBody = "";
+      globalThis.fetch = mock((_url: string, init: RequestInit) => {
+        capturedBody = init.body as string;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "test",
+            model: "gpt-4",
+            choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          }),
+        } as unknown as Response);
+      });
+
+      await adapter.chat({
+        ...basicRequest,
+        toolChoice: "required",
+      });
+
+      const parsed = JSON.parse(capturedBody);
+      expect(parsed.tool_choice).toBeUndefined();
+      expect(parsed.tools).toBeUndefined();
+    });
   });
 
   describe("healthCheck", () => {

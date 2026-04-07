@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createContextStore } from "../context/store";
+import { createPolicyEngine } from "../policies";
 import {
+  createGetContextTool,
   createListFilesTool,
   createReadFileTool,
   createRunCommandTool,
@@ -39,6 +42,14 @@ describe("read_file", () => {
     const result = await tool.execute({ path: "../../etc/passwd" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("traversal");
+  });
+
+  test("returns cached marker on repeated paged reads", async () => {
+    const first = await tool.execute({ path: "src/index.ts", offset: 1, limit: 2 });
+    expect(first.ok).toBe(true);
+    const second = await tool.execute({ path: "src/index.ts", offset: 1, limit: 2 });
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.value).toContain("[cached:");
   });
 });
 
@@ -82,6 +93,14 @@ describe("list_files", () => {
       expect(result.value).toContain("src/index.ts");
     }
   });
+
+  test("returns cached marker on repeated identical listings", async () => {
+    const first = await tool.execute({ path: ".", recursive: true });
+    expect(first.ok).toBe(true);
+    const second = await tool.execute({ path: ".", recursive: true });
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.value).toContain("[cached:");
+  });
 });
 
 describe("run_command", () => {
@@ -122,5 +141,32 @@ describe("search_files", () => {
     const result = await tool.execute({ pattern: "42", glob: "*.ts" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toContain("index.ts");
+  });
+});
+
+describe("get_context", () => {
+  test("returns cached marker on repeated identical context fetches", async () => {
+    const store = createContextStore({ dbPath: ":memory:" });
+    await store.set("architect.output", "plan body", "architect");
+    const policyResult = createPolicyEngine({});
+    expect(policyResult.ok).toBe(true);
+    if (!policyResult.ok) return;
+
+    const tool = createGetContextTool(
+      store,
+      { read: ["architect.*"], write: [] },
+      policyResult.value,
+      "coder",
+    );
+
+    const first = await tool.execute({ key: "architect.output" });
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.value).toBe("plan body");
+
+    const second = await tool.execute({ key: "architect.output" });
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.value).toContain("[cached:");
+
+    store.close();
   });
 });

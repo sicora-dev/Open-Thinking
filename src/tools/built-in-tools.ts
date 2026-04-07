@@ -51,7 +51,14 @@ function safePath(workingDir: string, filePath: string): string | null {
  */
 type ReadCacheEntry = { mtimeMs: number; size: number };
 
-export function createReadFileTool(workingDir: string): ToolFunction {
+export type ToolSessionState = {
+  fsEpoch: number;
+};
+
+export function createReadFileTool(
+  workingDir: string,
+  session: ToolSessionState = { fsEpoch: 0 },
+): ToolFunction {
   // Cache lifetime = lifetime of this tool function = one stage run.
   const sessionCache = new Map<string, ReadCacheEntry>();
 
@@ -92,11 +99,9 @@ export function createReadFileTool(workingDir: string): ToolFunction {
       const stat = statSync(resolved);
       if (stat.isDirectory()) return err(new Error(`Path is a directory: ${filePath}`));
 
-      // Cache check — only suppress when no offset/limit was used,
-      // since paged reads may legitimately re-fetch different ranges.
-      const cached = sessionCache.get(resolved);
-      const fullRead = offset === 1 && limitArg === READ_FILE_MAX_LINES;
-      if (cached && fullRead && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      const cacheKey = `${resolved}:${offset}:${limit}:${session.fsEpoch}`;
+      const cached = sessionCache.get(cacheKey);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
         return ok(
           `[cached: ${filePath} unchanged since the previous read in this stage. ` +
             "The content is in your working memory — do not re-process it.]",
@@ -141,17 +146,17 @@ export function createReadFileTool(workingDir: string): ToolFunction {
         );
       }
 
-      // Update cache only on a full read.
-      if (fullRead) {
-        sessionCache.set(resolved, { mtimeMs: stat.mtimeMs, size: stat.size });
-      }
+      sessionCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size });
 
       return ok(notes.length > 0 ? `${body}\n\n[${notes.join(" ")}]` : body);
     },
   };
 }
 
-export function createWriteFileTool(workingDir: string): ToolFunction {
+export function createWriteFileTool(
+  workingDir: string,
+  session: ToolSessionState = { fsEpoch: 0 },
+): ToolFunction {
   return {
     name: "write_file",
     description:
@@ -172,12 +177,17 @@ export function createWriteFileTool(workingDir: string): ToolFunction {
 
       mkdirSync(dirname(resolved), { recursive: true });
       writeFileSync(resolved, content);
+      session.fsEpoch += 1;
       return ok(`Wrote ${content.length} bytes to ${filePath}`);
     },
   };
 }
 
-export function createListFilesTool(workingDir: string): ToolFunction {
+export function createListFilesTool(
+  workingDir: string,
+  session: ToolSessionState = { fsEpoch: 0 },
+): ToolFunction {
+  const sessionCache = new Set<string>();
   return {
     name: "list_files",
     description: "List files and directories. Returns a newline-separated list of paths.",
@@ -197,6 +207,14 @@ export function createListFilesTool(workingDir: string): ToolFunction {
       const resolved = safePath(workingDir, dirPath);
       if (!resolved) return err(new Error(`Path traversal blocked: ${dirPath}`));
       if (!existsSync(resolved)) return err(new Error(`Directory not found: ${dirPath}`));
+
+      const cacheKey = `${resolved}:${recursive}:${session.fsEpoch}`;
+      if (sessionCache.has(cacheKey)) {
+        return ok(
+          `[cached: list_files(${dirPath}${recursive ? ", recursive=true" : ""}) unchanged since the previous call in this stage. ` +
+            "The directory listing is already in your working memory.]",
+        );
+      }
 
       const entries: string[] = [];
 
@@ -225,6 +243,7 @@ export function createListFilesTool(workingDir: string): ToolFunction {
       // summary with file counts. The agent can drill down with a
       // narrower path argument if it actually needs the leaf names.
       if (entries.length > GROUPING_THRESHOLD) {
+        sessionCache.add(cacheKey);
         return ok(formatGroupedListing(entries, entries.length >= MAX_LIST_ENTRIES));
       }
 
@@ -232,6 +251,7 @@ export function createListFilesTool(workingDir: string): ToolFunction {
         entries.length >= MAX_LIST_ENTRIES
           ? `\n[... truncated at ${MAX_LIST_ENTRIES} entries]`
           : "";
+      sessionCache.add(cacheKey);
       return ok(entries.join("\n") + suffix);
     },
   };
@@ -295,7 +315,10 @@ function formatGroupedListing(entries: string[], wasTruncated: boolean): string 
   return lines.join("\n");
 }
 
-export function createRunCommandTool(workingDir: string): ToolFunction {
+export function createRunCommandTool(
+  workingDir: string,
+  session: ToolSessionState = { fsEpoch: 0 },
+): ToolFunction {
   return {
     name: "run_command",
     description:
@@ -321,6 +344,7 @@ export function createRunCommandTool(workingDir: string): ToolFunction {
           stdio: ["pipe", "pipe", "pipe"],
         });
         const filtered = filterCommandOutput(command, output);
+        session.fsEpoch += 1;
         return ok(filtered || "(no output)");
       } catch (e) {
         const execError = e as {
@@ -334,6 +358,7 @@ export function createRunCommandTool(workingDir: string): ToolFunction {
         // largely unfiltered so the agent can react to them.
         const stderr = filterCommandOutput(command, execError.stderr ?? "");
         const status = execError.status ?? 1;
+        session.fsEpoch += 1;
         return ok(`Exit code: ${status}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`);
       }
     },
@@ -429,6 +454,7 @@ export function createGetContextTool(
   policyEngine: PolicyEngine,
   stageName: string,
 ): ToolFunction {
+  const sessionCache = new Map<string, string>();
   return {
     name: "get_context",
     description:
@@ -465,6 +491,14 @@ export function createGetContextTool(
       const result = await contextStore.get(key);
       if (!result.ok) return err(result.error);
       if (!result.value) return err(new Error(`Context key not found: ${key}`));
+      const cachedValue = sessionCache.get(key);
+      if (cachedValue !== undefined && cachedValue === result.value.value) {
+        return ok(
+          `[cached: context key "${key}" unchanged since the previous fetch in this stage. ` +
+            "The value is already in your working memory.]",
+        );
+      }
+      sessionCache.set(key, result.value.value);
       return ok(result.value.value);
     },
   };

@@ -60,6 +60,9 @@ function buildRequestBody(request: ChatRequest): Record<string, unknown> {
       },
     }));
   }
+  if (request.tools?.length && request.toolChoice && request.toolChoice !== "auto") {
+    body.tool_choice = request.toolChoice;
+  }
   if (request.stream) body.stream = true;
   return body;
 }

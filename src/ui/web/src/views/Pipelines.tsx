@@ -57,24 +57,25 @@ export function Pipelines() {
   };
 
   return (
-    <div className="p-6">
-      <header className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-lg font-medium">Pipelines</h1>
-          <p className="text-xs text-ink-400 mt-0.5">
-            Global pipelines stored in <code>~/.openthk/pipelines</code>.
-          </p>
-        </div>
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-5">
+        <p className="text-xs text-ink-400">
+          Stored in <code className="text-ink-300">~/.openthk/pipelines</code>
+        </p>
         <button className="btn-accent" onClick={() => setShowCreate(true)}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
           New pipeline
         </button>
-      </header>
+      </div>
 
       {error && (
         <div className="panel p-3 text-red-400 text-sm mb-4">{error}</div>
       )}
 
-      <div className="panel">
+      <div className="panel overflow-hidden">
         {pipelines.length === 0 ? (
           <EmptyState
             title="No pipelines yet"
@@ -87,39 +88,37 @@ export function Pipelines() {
           />
         ) : (
           <table className="w-full text-sm">
-            <thead className="text-left text-ink-400">
-              <tr className="border-b border-ink-700">
-                <th className="px-4 py-2 font-normal">Name</th>
-                <th className="px-4 py-2 font-normal">Path</th>
-                <th className="px-4 py-2 font-normal">Last opened</th>
-                <th className="px-4 py-2" />
+            <thead>
+              <tr className="border-b border-ink-700/50 bg-ink-900/40">
+                <th className="px-4 py-3 text-left label">Name</th>
+                <th className="px-4 py-3 text-left label">Path</th>
+                <th className="px-4 py-3 text-left label">Last opened</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {pipelines.map((p) => (
-                <tr key={p.id} className="border-b border-ink-700/50">
-                  <td className="px-4 py-2">{p.name}</td>
-                  <td className="px-4 py-2 text-ink-400 font-mono text-xs truncate max-w-md">
+                <tr
+                  key={p.id}
+                  className="border-b border-ink-700/30 last:border-0 hover:bg-ink-800/30 transition-colors cursor-pointer"
+                  onClick={() => {
+                    window.location.hash = `#/pipelines/${p.id}`;
+                  }}
+                >
+                  <td className="px-4 py-3 font-medium text-ink-100">{p.name}</td>
+                  <td className="px-4 py-3 text-ink-400 font-mono text-xs truncate max-w-md" title={p.path}>
                     {p.path}
                   </td>
-                  <td className="px-4 py-2 text-ink-400 text-xs">
+                  <td className="px-4 py-3 text-ink-400 text-xs">
                     {p.lastOpenedAt ? new Date(p.lastOpenedAt).toLocaleString() : "—"}
                   </td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex gap-2 justify-end">
-                      <button
-                        className="btn !py-1 !px-2"
-                        onClick={() => {
-                          window.location.hash = `#/pipelines/${p.id}`;
-                        }}
-                      >
-                        Edit
-                      </button>
-                      <button className="btn !py-1 !px-2" onClick={() => setRunDialog(p)}>
+                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-1.5 justify-end">
+                      <button className="btn-ghost !px-2.5 !py-1 !text-xs" onClick={() => setRunDialog(p)}>
                         Run
                       </button>
                       <button
-                        className="btn !py-1 !px-2"
+                        className="btn-ghost !px-2.5 !py-1 !text-xs hover:!text-red-400"
                         onClick={() => onDelete(p.id)}
                       >
                         Remove

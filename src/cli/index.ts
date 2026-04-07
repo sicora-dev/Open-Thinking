@@ -12,6 +12,7 @@ import { registerProviderCommand } from "./commands/provider";
 import { registerRunCommand } from "./commands/run";
 import { registerUiCommand } from "./commands/ui";
 import { registerValidateCommand } from "./commands/validate";
+import { registerWorkspaceCommand } from "./commands/workspace";
 import { startRepl } from "./repl";
 import { startUiHttpServer } from "../ui/server/server";
 import { VERSION } from "../version";
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
   registerProviderCommand(program);
   registerContextCommand(program);
   registerUiCommand(program);
+  registerWorkspaceCommand(program);
 
   // If no subcommand is provided, launch the interactive REPL
   const args = process.argv.slice(2);

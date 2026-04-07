@@ -115,6 +115,20 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<PipelineNode>([]);
   const [dependencyEdges, setDependencyEdges, onDependencyEdgesChange] = useEdgesState<PipelineEdge>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem("editor-left-panel") !== "false";
+  });
+  const [rightPanelOpen, setRightPanelOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem("editor-right-panel") !== "false";
+  });
+  useEffect(() => {
+    localStorage.setItem("editor-left-panel", String(leftPanelOpen));
+  }, [leftPanelOpen]);
+  useEffect(() => {
+    localStorage.setItem("editor-right-panel", String(rightPanelOpen));
+  }, [rightPanelOpen]);
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidationState>(INITIAL_VALIDATION);
   const [saving, setSaving] = useState(false);
@@ -131,6 +145,7 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const [reactFlowInstance, setReactFlowInstance] = useState<{
     screenToFlowPosition: (point: { x: number; y: number }) => { x: number; y: number };
   } | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const runStreamRef = useRef<(() => void) | null>(null);
   const runIdRef = useRef<string | null>(null);
   const seenRunEventSeqsRef = useRef<Set<number>>(new Set());
@@ -298,6 +313,16 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
     if (!logRef.current) return;
     logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [runEvents]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isFullscreen]);
 
   const onConnect = (connection: Connection) => {
     if (!draft || draft.mode !== "sequential") return;
@@ -741,8 +766,16 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-[240px_minmax(0,1fr)_340px]">
-        <aside className="border-r border-ink-700 bg-ink-900 p-4 space-y-4 overflow-auto">
+      <div
+        className="flex-1 min-h-0 grid"
+        style={{
+          gridTemplateColumns: `${leftPanelOpen ? "240px" : "0px"} minmax(0,1fr) ${rightPanelOpen ? "340px" : "0px"}`,
+          transition: "grid-template-columns 220ms ease",
+        }}
+      >
+        <aside
+          className={`border-r border-ink-700 bg-ink-900 overflow-auto transition-opacity duration-200 ${leftPanelOpen ? "p-4 space-y-4 opacity-100" : "p-0 opacity-0 pointer-events-none"}`}
+        >
           <div>
             <div className="label mb-2">Palette</div>
             <div className="space-y-2">
@@ -781,6 +814,35 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
           onDragOver={(event) => event.preventDefault()}
           onDrop={handleDrop}
         >
+          {/* Floating panel toggles (n8n-style) */}
+          <button
+            type="button"
+            onClick={() => setLeftPanelOpen((v) => !v)}
+            title={leftPanelOpen ? "Hide palette" : "Show palette"}
+            className="absolute top-3 left-3 z-10 w-8 h-8 flex items-center justify-center rounded-lg bg-ink-900/90 border border-ink-700 text-ink-300 hover:text-ink-100 hover:bg-ink-800 backdrop-blur shadow-lg transition-all"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {leftPanelOpen ? (
+                <path d="M15 18l-6-6 6-6" />
+              ) : (
+                <path d="M9 18l6-6-6-6" />
+              )}
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => setRightPanelOpen((v) => !v)}
+            title={rightPanelOpen ? "Hide inspector" : "Show inspector"}
+            className="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-lg bg-ink-900/90 border border-ink-700 text-ink-300 hover:text-ink-100 hover:bg-ink-800 backdrop-blur shadow-lg transition-all"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {rightPanelOpen ? (
+                <path d="M9 18l6-6-6-6" />
+              ) : (
+                <path d="M15 18l-6-6 6-6" />
+              )}
+            </svg>
+          </button>
           <ReactFlow
             nodes={nodes}
             edges={allEdges}
@@ -791,26 +853,45 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
             onPaneClick={() => setSelectedNodeId(null)}
             onInit={setReactFlowInstance}
             fitView
+            fitViewOptions={{ padding: 0.25, maxZoom: 1.2 }}
+            minZoom={0.2}
+            maxZoom={2}
             nodeTypes={NODE_TYPES}
             proOptions={{ hideAttribution: true }}
+            panOnScroll
+            selectionOnDrag
+            panOnDrag={[1, 2]}
+            zoomOnDoubleClick={false}
             defaultEdgeOptions={{
-              markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
-              style: FLOW_EDGE_STYLE,
+              type: "smoothstep",
+              animated: false,
+              markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: "rgb(var(--accent))" },
+              style: { ...FLOW_EDGE_STYLE, strokeWidth: 2 },
             }}
           >
-            <Background variant={BackgroundVariant.Dots} color={FLOW_GRID_COLOR} gap={20} size={1.2} />
+            <Background variant={BackgroundVariant.Dots} color={FLOW_GRID_COLOR} gap={24} size={1.4} />
             <MiniMap
-              nodeBorderRadius={2}
+              nodeBorderRadius={6}
               pannable
               zoomable
               maskColor={FLOW_MINIMAP_MASK}
               nodeColor={(node) => getMiniMapColor(node as PipelineNode)}
+              style={{
+                backgroundColor: "rgb(var(--ink-900) / 0.85)",
+                border: "1px solid rgb(var(--ink-700) / 0.5)",
+                borderRadius: 8,
+              }}
             />
-            <Controls showInteractive={false} />
+            <Controls
+              showInteractive={false}
+              className="!bg-ink-900/90 !border !border-ink-700/50 !rounded-lg !shadow-lg !backdrop-blur"
+            />
           </ReactFlow>
         </div>
 
-        <aside className="border-l border-ink-700 bg-ink-900 overflow-auto">
+        <aside
+          className={`border-l border-ink-700 bg-ink-900 overflow-auto transition-opacity duration-200 ${rightPanelOpen ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        >
           <div className="px-4 py-3 border-b border-ink-700">
             <div className="text-sm font-medium">Inspector</div>
             <div className="text-[11px] text-ink-400 mt-1">
@@ -1234,24 +1315,62 @@ function PipelineNodeCard({ data, selected }: { data: EditorNodeData; selected?:
   const tone = getNodeTone(data.kind, data.status);
   const showTarget = data.kind !== "input";
   const showSource = data.kind !== "output";
+  const statusDot: Record<StageStatus, string> = {
+    idle: "bg-ink-600",
+    running: "bg-accent animate-pulse-soft",
+    success: "bg-green-500",
+    failed: "bg-red-500",
+    cancelled: "bg-orange-500",
+  };
+  const kindIcon = data.kind === "orchestrator" ? "◆" : data.kind === "input" ? "▶" : data.kind === "output" ? "■" : "●";
 
   return (
-    <div className={`min-w-[180px] border ${tone} bg-ink-900 ${selected ? "ring-1 ring-accent" : ""}`}>
-      {showTarget && <Handle type="target" position={Position.Left} className="!w-2 !h-2 !bg-accent !border-0" />}
-      {showSource && <Handle type="source" position={Position.Right} className="!w-2 !h-2 !bg-accent !border-0" />}
-      <div className="px-3 py-2 border-b border-ink-700 flex items-center justify-between gap-3">
-        <div className="text-sm font-medium truncate">{data.label}</div>
-        <span className="text-[10px] uppercase tracking-widest text-ink-400">{data.kind}</span>
+    <div
+      className={`min-w-[200px] rounded-xl border-2 ${tone} bg-ink-900/95 backdrop-blur shadow-lg overflow-hidden transition-all duration-150 ${
+        selected ? "ring-2 ring-accent ring-offset-2 ring-offset-ink-950 shadow-accent/20" : "hover:border-ink-500"
+      }`}
+    >
+      {showTarget && (
+        <Handle
+          type="target"
+          position={Position.Left}
+          className="!w-3 !h-3 !bg-accent !border-2 !border-ink-900 !-left-1.5"
+        />
+      )}
+      {showSource && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="!w-3 !h-3 !bg-accent !border-2 !border-ink-900 !-right-1.5"
+        />
+      )}
+      <div className="px-3 py-2.5 border-b border-ink-700/60 flex items-center justify-between gap-3 bg-ink-800/40">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-accent text-sm shrink-0">{kindIcon}</span>
+          <div className="text-sm font-semibold text-ink-100 truncate">{data.label}</div>
+        </div>
+        {isStageKind(data.kind) && (
+          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot[data.status]}`} />
+        )}
       </div>
-      <div className="px-3 py-2 text-[11px] text-ink-400 space-y-1">
+      <div className="px-3 py-2 text-[11px] space-y-1">
         {isStageKind(data.kind) ? (
           <>
-            <div className="font-mono">{data.provider}</div>
-            <div className="font-mono truncate">{data.model}</div>
-            <div className="truncate">{data.skill}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-ink-500 w-12 shrink-0">provider</span>
+              <span className="font-mono text-ink-300 truncate">{data.provider || "—"}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-ink-500 w-12 shrink-0">model</span>
+              <span className="font-mono text-ink-300 truncate">{data.model || "—"}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-ink-500 w-12 shrink-0">skill</span>
+              <span className="text-ink-300 truncate">{data.skill || "—"}</span>
+            </div>
           </>
         ) : (
-          <div>{data.kind === "input" ? "Pipeline entry point" : "Pipeline exit"}</div>
+          <div className="text-ink-400">{data.kind === "input" ? "Pipeline entry point" : "Pipeline exit"}</div>
         )}
       </div>
     </div>

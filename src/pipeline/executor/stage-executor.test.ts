@@ -519,11 +519,13 @@ describe("executePipeline (orchestrated)", () => {
 
   test("orchestrator receives delegate tool in its definitions", async () => {
     let receivedTools: string[] = [];
+    let receivedToolChoice: string | undefined;
     const provider: LLMProvider = {
       ...mockProvider("done"),
       chat: mock((req) => {
-        const request = req as { tools?: Array<{ name: string }> };
+        const request = req as { tools?: Array<{ name: string }>; toolChoice?: string };
         receivedTools = (request.tools ?? []).map((t) => t.name);
+        receivedToolChoice = request.toolChoice;
         return Promise.resolve(
           ok({
             id: "1",
@@ -559,6 +561,7 @@ describe("executePipeline (orchestrated)", () => {
     await executePipeline(deps);
 
     expect(receivedTools).toContain("delegate");
+    expect(receivedToolChoice).toBe("required");
 
     store.close();
   });

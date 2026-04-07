@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { executeSlashCommand, getCommandCompletions } from "./slash-commands";
 import type { ReplState } from "./slash-commands";
@@ -77,6 +80,55 @@ describe("Slash Commands", () => {
     expect(result.output).toContain("openai");
   });
 
+  test("/workspace shows current workspace", async () => {
+    const result = await executeSlashCommand("workspace", stateWithPipeline());
+    expect(result.output).toContain("Workspace: /tmp/test-project");
+    expect(result.output).toContain("Active pipeline: test-pipeline");
+  });
+
+  test("/workspace switch <path> updates state and loads workspace pipeline", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "openthk-ws-"));
+    try {
+      writeFileSync(
+        join(dir, "openthk.pipeline.yaml"),
+        [
+          "name: switched-pipeline",
+          'version: "0.1.0"',
+          "",
+          "context:",
+          "  backend: sqlite",
+          "  vector: embedded",
+          '  ttl: "7d"',
+          "",
+          "providers:",
+          "  - openai",
+          "",
+          "stages:",
+          "  planner:",
+          "    provider: openai",
+          "    model: gpt-4o-mini",
+          "    skill: core/arch-planner@1.0",
+          "    context:",
+          '      read: ["input.*"]',
+          '      write: ["plan.*"]',
+          "",
+          "policies:",
+          "  global: {}",
+          "",
+        ].join("\n"),
+      );
+
+      const result = await executeSlashCommand(`workspace switch ${dir}`, baseState());
+      expect(result.output).toContain(`Switched workspace to ${dir}`);
+      expect(result.stateUpdates?.workingDir).toBe(dir);
+      expect(result.stateUpdates?.pipelineConfig?.name).toBe("switched-pipeline");
+      expect(result.stateUpdates?.pipelinePath).toBe(join(dir, "openthk.pipeline.yaml"));
+      expect(result.stateUpdates?.skillsDir).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("/model lists stage models", async () => {
     const result = await executeSlashCommand("model", stateWithPipeline());
     expect(result.output).toContain("planner");
@@ -127,6 +179,7 @@ describe("Slash Commands", () => {
     const completions = getCommandCompletions();
     expect(completions).toContain("/help");
     expect(completions).toContain("/pipeline");
+    expect(completions).toContain("/workspace");
     expect(completions).toContain("/exit");
     expect(completions).toContain("/h");
     expect(completions).toContain("/q");

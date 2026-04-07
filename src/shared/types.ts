@@ -128,6 +128,8 @@ export type ChatRequest = {
   temperature?: number;
   systemPrompt?: string;
   tools?: ToolDefinition[];
+  /** Tool choice hint for OpenAI-compatible providers. */
+  toolChoice?: "auto" | "required" | "none";
   stream?: boolean;
   /** Abort signal for cancellation support. */
   signal?: AbortSignal;
