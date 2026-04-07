@@ -82,6 +82,7 @@ stages:
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
 - [Inicio rápido](#inicio-rápido)
+- [Interfaz web](#interfaz-web)
 - [Referencia de la CLI](#referencia-de-la-cli)
   - [REPL interactiva](#repl-interactiva)
   - [Comandos directos](#comandos-directos)
@@ -172,6 +173,29 @@ O ejecuta un pipeline directamente sin entrar en la REPL:
 openthk run -p openthk.pipeline.yaml -i "Build a REST API for a todo app"
 ```
 
+## Interfaz web
+
+OpenThinking incluye una interfaz web local para gestionar pipelines, proveedores, skills y ejecuciones en vivo.
+
+```bash
+# Arranca la UI en segundo plano y abre el navegador
+openthk ui start
+
+# Arranca sin abrir el navegador
+openthk ui start --no-open
+
+# Consultar estado, parar o seguir logs
+openthk ui status
+openthk ui stop
+openthk ui logs -f
+```
+
+- La UI solo escucha en `127.0.0.1`.
+- El puerto por defecto es `17880`; si está ocupado, OpenThinking hace fallback automáticamente a otro puerto local.
+- La preferencia de autostart del primer arranque se puede gestionar desde la REPL con `/ui autostart on|off`.
+- Vistas principales: Pipelines, Runs, Providers y Skills.
+- El editor visual soporta edición por grafo, round-trip YAML, validación en vivo, save/save-as, lanzamiento y cancelación de runs, y streaming SSE con reconexión.
+
 ## Referencia de la CLI
 
 ### REPL interactiva
@@ -235,6 +259,18 @@ openthk run -p pipeline.yaml -i "Write unit tests" --stage testing
 
 # Previsualizar el plan de ejecución
 openthk run -p pipeline.yaml -i "Refactor auth module" --dry-run
+```
+
+#### `openthk ui`
+
+Gestiona el servidor local de la interfaz web.
+
+```bash
+openthk ui start [--port <number>] [--foreground] [--no-open]
+openthk ui status
+openthk ui restart
+openthk ui stop
+openthk ui logs [-f]
 ```
 
 #### `openthk validate`

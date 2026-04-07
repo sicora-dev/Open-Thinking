@@ -45,7 +45,7 @@ src/
 ├── policies/         # Access control and policies
 │   └── engine/       # Policy evaluation engine (glob matching, rate limit, cost)
 ├── shared/           # Shared types, utils, errors
-└── dashboard/        # Web dashboard (Phase 3 — not implemented yet)
+└── ui/               # Local web UI server, REST API, embedded frontend
 ```
 
 ## Key Design Decisions
@@ -67,6 +67,15 @@ src/
 8. **Policies are declarative**: Defined in pipeline YAML, evaluated before each context read/write. A stage trying to write outside its allowed namespaces gets a hard error.
 
 9. **Skill-based tool permissions**: Each skill declares its `allowed_tools` in `skill.yaml`. This is enforced at the tool registry level — if a tool isn't listed, the LLM cannot call it regardless of what it tries. There are no hardcoded stage types — each skill author decides what their skill can do. The pipeline YAML `allowed_tools` field overrides the skill's defaults if the user wants different behavior. If neither the skill nor the YAML defines `allowed_tools`, the stage has access to all tools.
+
+## Web UI
+
+- Local-only UI served on `127.0.0.1` via `openthk ui start|stop|status|restart|logs`
+- Default port is `17880`, with automatic fallback if busy
+- Browser opens automatically on `openthk ui start` unless `--no-open` is passed
+- REPL support lives under `/ui start|stop|status|open|autostart on|off`
+- Main views: Pipelines, Runs, Providers, Skills, plus the visual pipeline editor
+- The editor supports graph editing, YAML round-tripping, live validation, save/save-as, run launch, cancel, and live SSE updates
 
 ## Code Conventions
 

@@ -14,7 +14,9 @@
   "scripts": {
     "dev": "bun run src/cli/index.ts",
     "build": "node scripts/build-cli.mjs",
-    "build:binary": "bun build src/cli/index.ts --compile --outfile dist/openthk",
+    "build:ui": "cd src/ui/web && bun install && bun run build && cd ../../.. && node scripts/embed-ui-assets.mjs",
+    "build:all": "bun run build:ui && bun run build",
+    "build:binary": "bun run build:ui && bun build src/cli/index.ts --compile --outfile dist/openthk",
     "test": "bun test",
     "lint": "bunx @biomejs/biome check src/",
     "format": "bunx @biomejs/biome format --write src/",

@@ -5,6 +5,7 @@ dist/
 *.db
 *.db-journal
 .claude/
+TODO.md
 
 # Env files with secrets
 .env

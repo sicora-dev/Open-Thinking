@@ -310,6 +310,17 @@ export function loadStageContext(workingDir: string, stageName: string): StageCo
 
 /**
  * Format persistent context as a string block for injection into the system prompt.
+ *
+ * Token efficiency: only the *small, deliberate* sections are inlined eagerly:
+ *   - project soul (project.md)
+ *   - user preferences (~/.openthk/user.md)
+ *   - stage instructions (stages/<name>.md)
+ *
+ * The larger, growing sections — `learned/` and `history/` — are NOT inlined.
+ * Instead, the executor seeds them into the context store as keys
+ * `persistent.learned` and `persistent.history`, and the agent fetches
+ * them on demand via `get_context(...)`. The system prompt only gets a
+ * one-line note pointing the agent at these keys when present.
  */
 export function formatPersistentContext(ctx: StageContext): string {
   const sections: string[] = [];
@@ -326,12 +337,21 @@ export function formatPersistentContext(ctx: StageContext): string {
     sections.push(`<stage-instructions>\n${ctx.stageInstructions}\n</stage-instructions>`);
   }
 
+  // Lazy pointers — content lives in the context store as `persistent.learned`
+  // and `persistent.history` and is fetched on demand.
+  const lazyHints: string[] = [];
   if (ctx.learned) {
-    sections.push(`<learned>\n${ctx.learned}\n</learned>`);
+    lazyHints.push(
+      'Project learned notes available via get_context("persistent.learned").',
+    );
   }
-
   if (ctx.recentHistory) {
-    sections.push(`<recent-history>\n${ctx.recentHistory}\n</recent-history>`);
+    lazyHints.push(
+      'Recent execution history available via get_context("persistent.history").',
+    );
+  }
+  if (lazyHints.length > 0) {
+    sections.push(`<lazy-context>\n${lazyHints.join("\n")}\n</lazy-context>`);
   }
 
   return sections.length > 0 ? sections.join("\n\n") : "";

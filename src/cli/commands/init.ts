@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
  * `openthk init [name]` — Scaffold a new OpenThinking project.
  */
 import type { Command } from "commander";
+import { getProjectSkillsDir } from "../../skills/catalog";
 import { ensureGlobalWorkspace, initProjectWorkspace, setActivePipeline } from "../../workspace";
 
 const PIPELINE_TEMPLATE = `name: my-pipeline
@@ -50,7 +51,7 @@ export function registerInitCommand(program: Command): void {
     .action(async (name: string) => {
       const dir = resolve(name === "." ? process.cwd() : name);
       const pipelineFile = join(dir, "openthk.pipeline.yaml");
-      const skillsDir = join(dir, "skills");
+      const skillsDir = getProjectSkillsDir(dir);
 
       // Initialize workspace directories first (creates .openthk/pipelines/)
       ensureGlobalWorkspace();
@@ -79,7 +80,7 @@ export function registerInitCommand(program: Command): void {
       const displayName = name === "." ? "current directory" : name;
       console.log(`Initialized OpenThinking project in ${displayName}`);
       console.log("  Created .openthk/pipelines/default.yaml");
-      console.log("  Created skills/");
+      console.log("  Created .openthk/pipelines/skills/");
       if (isNew) {
         console.log("  Created .openthk/ (project workspace)");
       }

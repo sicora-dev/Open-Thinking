@@ -55,6 +55,8 @@ export type StageDefinition = {
   provider: string;
   model: string;
   skill: string;
+  /** Optional extra system instruction appended after the skill prompt. */
+  system_message?: string;
   context: StageContextPermissions;
   depends_on?: string[];
   max_tokens?: number;
@@ -79,6 +81,13 @@ export type StageDefinition = {
 export type StageContextPermissions = {
   read: string[]; // Glob patterns: ["plan.*", "code.files"]
   write: string[]; // Glob patterns: ["code.*"]
+  /**
+   * If true, the entire readable context is inlined into the prompt
+   * eagerly on every call. Default (false) is *lazy*: the LLM gets an
+   * index (key + size) and must call `get_context(key)` to fetch values.
+   * Small entries (<EAGER_INLINE_THRESHOLD bytes) are always inlined.
+   */
+  eager?: boolean;
 };
 
 export type FailureConfig = {
@@ -148,6 +157,41 @@ export type TokenUsage = {
   completionTokens: number;
   totalTokens: number;
 };
+
+/**
+ * Per-stage breakdown of where tokens / bytes were spent.
+ *
+ * Used by the live token meter and the `/tokens` inspector to attribute
+ * cost to specific tools and to the context payload, so users can see
+ * which part of their pipeline is expensive.
+ *
+ * `toolResultBytes` is keyed by tool name and counts the *raw bytes*
+ * of the tool result that was sent back to the LLM (after truncation).
+ * It is a strong proxy for token cost without the overhead of running
+ * a tokenizer for every tool call.
+ */
+export type TokenBreakdown = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** Bytes of tool result content fed back to the LLM, by tool name. */
+  toolResultBytes: Record<string, number>;
+  /** Bytes of context block (from context store) fed to the LLM. */
+  contextBytes: number;
+  /** Bytes of persistent context (project soul, learned, etc.). */
+  persistentContextBytes: number;
+};
+
+export function emptyBreakdown(): TokenBreakdown {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    toolResultBytes: {},
+    contextBytes: 0,
+    persistentContextBytes: 0,
+  };
+}
 
 export type ModelInfo = {
   id: string;
@@ -228,6 +272,8 @@ export type StageResult = {
   output?: string;
   usage?: TokenUsage;
   cost?: number;
+  /** Where tokens were spent within this stage. Optional for backwards compat. */
+  breakdown?: TokenBreakdown;
   durationMs: number;
   error?: string;
   contextKeysWritten: string[];
@@ -271,4 +317,21 @@ export type PipelineEvent =
   | { type: "stage:model-fallback"; stageName: string; fromModel: string; toModel: string }
   | { type: "delegate:start"; agentName: string; task: string; model: string }
   | { type: "delegate:complete"; agentName: string; result: StageResult; durationMs: number }
-  | { type: "delegate:error"; agentName: string; error: string };
+  | { type: "delegate:error"; agentName: string; error: string }
+  /**
+   * Live token meter update. Emitted after every LLM call inside the agent loop.
+   * The UI uses this to refresh the persistent status line.
+   */
+  | {
+      type: "tokens:update";
+      stageName: string;
+      model: string;
+      providerType: string;
+      iteration: number;
+      usage: TokenUsage;
+      breakdown: TokenBreakdown;
+    }
+  /** Emitted when an agent enters a "thinking" wait — UI may show a spinner with funny text. */
+  | { type: "thinking:start"; stageName: string }
+  /** Emitted when the wait ends (response received, tool call, or error). */
+  | { type: "thinking:end"; stageName: string };

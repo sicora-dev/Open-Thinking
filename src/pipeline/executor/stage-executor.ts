@@ -3,11 +3,10 @@
  * Handles sequential/parallel execution, context I/O, policy enforcement,
  * and failure routing (retry, re-route).
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
 import type { EventBus } from "../../core/events/event-bus";
 import type { PolicyEngine } from "../../policies/engine";
+import { estimateCost as estimateCostFromPricing, isLocalProvider } from "../../providers/pricing";
+import { loadSkillDefinition } from "../../skills/catalog";
 import { ProviderError } from "../../shared/errors";
 import { type Result, err, ok } from "../../shared/result";
 import type {
@@ -22,7 +21,12 @@ import type {
   TokenUsage,
 } from "../../shared/types";
 import { createDelegateTool, createToolRegistry } from "../../tools";
-import { formatPersistentContext, loadStageContext } from "../../workspace";
+import {
+  formatPersistentContext,
+  loadStageContext,
+  readLearned,
+  readRecentHistory,
+} from "../../workspace";
 import { type AgentLoopConfig, type AgentLoopResult, runAgentLoop } from "./agent-loop";
 
 export type ExecutorDeps = {
@@ -33,8 +37,8 @@ export type ExecutorDeps = {
   eventBus: EventBus;
   /** Working directory of the project. Used for persistent context (.openthk/). */
   workingDir: string;
-  /** Base directory for resolving skill paths. Defaults to cwd. */
-  skillsDir?: string;
+  /** Base directory or directories for resolving skill paths. */
+  skillsDir?: string | string[];
   /** Abort signal for cancellation support. */
   signal?: AbortSignal;
   /**
@@ -126,55 +130,92 @@ async function buildContextPayload(
 }
 
 /**
- * Format context as a string block for the LLM prompt.
+ * Bytes under which a context entry is always inlined eagerly.
+ * Smaller than this and the round-trip cost of `get_context(key)` exceeds
+ * the cost of just including the value upfront.
  */
-function formatContextForPrompt(context: Record<string, string>): string {
-  if (Object.keys(context).length === 0) return "";
-  const lines = Object.entries(context).map(([key, value]) => `[${key}]\n${value}`);
-  return `\n\n--- Context ---\n${lines.join("\n\n")}\n--- End Context ---`;
-}
-
-type LoadedSkill = {
-  prompt: string | null;
-  allowedTools: string[] | null;
-};
+const EAGER_INLINE_THRESHOLD = 500;
 
 /**
- * Load a skill's prompt.md and skill.yaml. Skill references look like "core/arch-planner@1.0".
- * We resolve to: <skillsDir>/<namespace>/<name>/
+ * Format context as a string block for the LLM prompt.
  *
- * The skill.yaml defines allowed_tools — the default tool permissions for this skill type.
- * A planner skill only gets read tools, a coder gets everything, etc.
+ * Two modes:
+ * - **eager** (legacy / opt-in): every readable entry inlined fully.
+ *   Use only when the stage genuinely needs everything every iteration —
+ *   it is *much* more expensive in tokens.
+ * - **lazy** (default): an *index* of available keys is shown, plus the
+ *   inline content of small entries (< EAGER_INLINE_THRESHOLD bytes).
+ *   The model fetches large values via the `get_context(key)` tool only
+ *   when it actually needs them.
+ *
+ * Returns the formatted block plus the byte count of what was inlined,
+ * so callers can attribute it in the token meter breakdown.
  */
-function loadSkill(skillRef: string, skillsDir: string): LoadedSkill {
-  // Parse "namespace/name@version" or just "name"
-  const withoutVersion = skillRef.split("@")[0] ?? skillRef;
-  const parts = withoutVersion.split("/");
-  const first = parts[0] ?? withoutVersion;
-  const skillDir =
-    parts.length >= 2
-      ? join(skillsDir, first, parts.slice(1).join("/"))
-      : join(skillsDir, first);
+function formatContextForPrompt(
+  context: Record<string, string>,
+  eager: boolean,
+): { block: string; bytes: number } {
+  const entries = Object.entries(context);
+  if (entries.length === 0) return { block: "", bytes: 0 };
 
-  // Load prompt.md
-  const promptPath = join(skillDir, "prompt.md");
-  const prompt = existsSync(promptPath) ? readFileSync(promptPath, "utf-8").trim() : null;
+  if (eager) {
+    const lines = entries.map(([key, value]) => `[${key}]\n${value}`);
+    const block = `\n\n--- Context ---\n${lines.join("\n\n")}\n--- End Context ---`;
+    return { block, bytes: new TextEncoder().encode(block).length };
+  }
 
-  // Load skill.yaml manifest for tool permissions
-  let allowedTools: string[] | null = null;
-  const manifestPath = join(skillDir, "skill.yaml");
-  if (existsSync(manifestPath)) {
-    try {
-      const raw = parseYaml(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
-      if (Array.isArray(raw.allowed_tools)) {
-        allowedTools = raw.allowed_tools as string[];
-      }
-    } catch {
-      // If manifest is malformed, fall back to defaults
+  // Lazy mode: index + inline-small.
+  const indexLines: string[] = [];
+  const inlineParts: string[] = [];
+  for (const [key, value] of entries) {
+    const size = new TextEncoder().encode(value).length;
+    if (size <= EAGER_INLINE_THRESHOLD) {
+      inlineParts.push(`[${key}]\n${value}`);
+      indexLines.push(`  - ${key} (${size}B, inlined above)`);
+    } else {
+      indexLines.push(`  - ${key} (${formatBytesShort(size)}, fetch with get_context("${key}"))`);
     }
   }
 
-  return { prompt, allowedTools };
+  const sections: string[] = [];
+  if (inlineParts.length > 0) {
+    sections.push(`--- Context (inlined) ---\n${inlineParts.join("\n\n")}\n--- End Context ---`);
+  }
+  sections.push(`--- Available context keys ---\n${indexLines.join("\n")}\n--- End ---`);
+  const block = `\n\n${sections.join("\n\n")}`;
+  return { block, bytes: new TextEncoder().encode(block).length };
+}
+
+/**
+ * Seed the lazy persistent context entries (`persistent.learned`,
+ * `persistent.history`) into the context store. The agent fetches them
+ * on demand via `get_context(...)` instead of paying their full cost
+ * on every iteration via the system prompt.
+ *
+ * Best-effort: failures are silent. The agent simply won't see the keys.
+ *
+ * Note: read permissions for these keys are granted automatically by
+ * a glob extension below — see `effectiveReadPermissions`.
+ */
+async function seedPersistentLazyContext(
+  workingDir: string,
+  stageName: string,
+  contextStore: ContextStore,
+): Promise<void> {
+  const learned = readLearned(workingDir);
+  if (learned) {
+    await contextStore.set("persistent.learned", learned, stageName);
+  }
+  const history = readRecentHistory(workingDir);
+  if (history) {
+    await contextStore.set("persistent.history", history, stageName);
+  }
+}
+
+function formatBytesShort(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 /**
@@ -249,6 +290,11 @@ async function executeStage(
     };
   }
 
+  // Seed lazy persistent context (learned + history) into the context store
+  // so the agent can fetch it via get_context. This must happen *before*
+  // we build the context payload so the keys appear in the index.
+  await seedPersistentLazyContext(deps.workingDir, stageName, contextStore);
+
   // Build context payload
   const contextResult = await buildContextPayload(
     stageName,
@@ -269,21 +315,31 @@ async function executeStage(
     };
   }
 
-  const contextBlock = formatContextForPrompt(contextResult.value);
+  const { block: contextBlock, bytes: contextBytes } = formatContextForPrompt(
+    contextResult.value,
+    stageDef.context.eager === true,
+  );
 
   // Load skill prompt + manifest (tool permissions)
-  const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
-  const skill = loadSkill(stageDef.skill, skillsDir);
+  const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
 
   // Resolve tool permissions: stage YAML overrides > skill manifest > all tools
   const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
-  const toolRegistry = createToolRegistry(process.cwd(), allowedTools);
+  const toolRegistry = createToolRegistry(deps.workingDir, allowedTools, {
+    contextStore,
+    permissions: stageDef.context,
+    policyEngine,
+    stageName,
+  });
 
   // Build chat request — inject persistent context (project soul, user prefs, etc.)
   const persistentCtx = loadStageContext(deps.workingDir, stageName);
   const persistentBlock = formatPersistentContext(persistentCtx);
+  const persistentBytes = new TextEncoder().encode(persistentBlock).length;
 
-  const basePrompt = skill.prompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
+  const basePrompt = stageDef.system_message
+    ? `${skill.prompt ?? `You are the "${stageName}" stage in an AI pipeline.`}\n\n--- Stage Instruction ---\n${stageDef.system_message}`
+    : skill.prompt ?? `You are the "${stageName}" stage in an AI pipeline.`;
   const systemPrompt = persistentBlock
     ? `${basePrompt}\n\n--- Persistent Context ---\n${persistentBlock}`
     : basePrompt;
@@ -314,6 +370,9 @@ async function executeStage(
     maxIterations,
     eventBus,
     stageName,
+    providerType: deps.config.providers[stageDef.provider]?.type,
+    initialContextBytes: contextBytes,
+    initialPersistentContextBytes: persistentBytes,
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit
       ? (summary) => deps.onTokenLimit!(stageName, summary)
@@ -334,7 +393,8 @@ async function executeStage(
   const agentResult = loopResult.value;
 
   // Cost tracking
-  const cost = estimateCost(agentResult.totalUsage);
+  const providerType = deps.config.providers[stageDef.provider]?.type ?? "openai-compatible";
+  const cost = estimateStageCost(agentResult.totalUsage, stageDef.model, providerType);
   const costCheck = policyEngine.recordCost(cost, stageName);
   if (!costCheck.ok) {
     const error = costCheck.error.message;
@@ -376,6 +436,7 @@ async function executeStage(
     status: "success",
     output: agentResult.finalContent,
     usage: agentResult.totalUsage,
+    breakdown: agentResult.breakdown,
     cost,
     durationMs: Date.now() - start,
     contextKeysWritten,
@@ -388,11 +449,20 @@ async function executeStage(
 }
 
 /**
- * Rough cost estimate based on token usage. Real pricing would need model-specific rates.
+ * Estimate cost in USD for a stage's token usage.
+ *
+ * Resolves model pricing from the canonical pricing table. For local
+ * providers (ollama, etc.) the cost is always 0. For models not in the
+ * pricing table the function returns 0 — the caller is responsible for
+ * surfacing "unknown pricing" in the UI separately if it cares.
  */
-function estimateCost(usage: TokenUsage): number {
-  // Approximate: $0.01 per 1K tokens (placeholder)
-  return (usage.totalTokens / 1000) * 0.01;
+function estimateStageCost(
+  usage: TokenUsage,
+  model: string,
+  providerType: string,
+): number {
+  const cost = estimateCostFromPricing(usage, model, isLocalProvider(providerType));
+  return cost ?? 0;
 }
 
 /** Check if a stage failure was caused by a rate limit error. */
@@ -477,7 +547,6 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
   const [orchestratorName, orchestratorDef] = orchestratorEntry;
 
   // Create the delegate tool with access to all deps
-  const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
   const delegateTool = createDelegateTool({
     config,
     providers: deps.providers,
@@ -485,7 +554,7 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     policyEngine: deps.policyEngine,
     eventBus,
     workingDir: deps.workingDir,
-    skillsDir,
+    skillsDir: deps.skillsDir,
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit,
     runAgentLoop,
@@ -542,6 +611,9 @@ async function executeStageWithDelegateTool(
 
   eventBus.emit({ type: "stage:start", stageName, model: stageDef.model });
 
+  // Seed lazy persistent context for the orchestrator too.
+  await seedPersistentLazyContext(deps.workingDir, stageName, contextStore);
+
   // Build context
   const contextResult = await buildContextPayload(stageName, stageDef.context, contextStore, policyEngine, eventBus);
   if (!contextResult.ok) {
@@ -549,18 +621,24 @@ async function executeStageWithDelegateTool(
     return { stageName, status: "failed", durationMs: Date.now() - start, error: contextResult.error.message, contextKeysWritten: [] };
   }
 
-  const contextBlock = formatContextForPrompt(contextResult.value);
+  const { block: contextBlock, bytes: contextBytes } = formatContextForPrompt(
+    contextResult.value,
+    stageDef.context.eager === true,
+  );
 
   // Load skill
-  const skillsDir = deps.skillsDir ?? join(process.cwd(), "skills");
-  const skill = loadSkill(stageDef.skill, skillsDir);
+  const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
 
   // Orchestrator only gets the delegate tool — no filesystem tools.
   // If it could read/write files, it would do everything itself and never delegate.
+  let delegated = false;
   const orchestratorRegistry = {
     definitions: () => [{ name: delegateTool.name, description: delegateTool.description, parameters: delegateTool.parameters }],
     execute: async (name: string, args: Record<string, unknown>) => {
-      if (name === "delegate") return delegateTool.execute(args).then((r) => r.ok ? ok(typeof r.value === "string" ? r.value : JSON.stringify(r.value)) : err(r.error));
+      if (name === "delegate") {
+        delegated = true;
+        return delegateTool.execute(args).then((r) => r.ok ? ok(typeof r.value === "string" ? r.value : JSON.stringify(r.value)) : err(r.error));
+      }
       return err(new ProviderError(`Tool "${name}" is not available to the orchestrator. Use delegate to assign work to agents.`, "API_ERROR"));
     },
   };
@@ -568,7 +646,10 @@ async function executeStageWithDelegateTool(
   // Build system prompt with persistent context
   const persistentCtx = loadStageContext(deps.workingDir, stageName);
   const persistentBlock = formatPersistentContext(persistentCtx);
-  const basePrompt = skill.prompt ?? `You are the "${stageName}" orchestrator in an AI pipeline.`;
+  const persistentBytes = new TextEncoder().encode(persistentBlock).length;
+  const basePrompt = stageDef.system_message
+    ? `${skill.prompt ?? `You are the "${stageName}" orchestrator in an AI pipeline.`}\n\n--- Stage Instruction ---\n${stageDef.system_message}`
+    : skill.prompt ?? `You are the "${stageName}" orchestrator in an AI pipeline.`;
   const systemPrompt = persistentBlock ? `${basePrompt}\n\n--- Persistent Context ---\n${persistentBlock}` : basePrompt;
 
   const request: ChatRequest = {
@@ -592,6 +673,9 @@ async function executeStageWithDelegateTool(
     maxIterations,
     eventBus,
     stageName,
+    providerType: deps.config.providers[stageDef.provider]?.type,
+    initialContextBytes: contextBytes,
+    initialPersistentContextBytes: persistentBytes,
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit ? (summary) => deps.onTokenLimit!(stageName, summary) : undefined,
   });
@@ -602,7 +686,22 @@ async function executeStageWithDelegateTool(
   }
 
   const agentResult = loopResult.value;
-  const cost = estimateCost(agentResult.totalUsage);
+  if (!delegated) {
+    const error =
+      "Orchestrator finished without delegating any task. Ensure the model supports tool calling and that the orchestrator skill was loaded.";
+    eventBus.emit({ type: "stage:error", stageName, error });
+    return {
+      stageName,
+      status: "failed",
+      durationMs: Date.now() - start,
+      error,
+      usage: agentResult.totalUsage,
+      contextKeysWritten: [],
+    };
+  }
+
+  const providerType = deps.config.providers[stageDef.provider]?.type ?? "openai-compatible";
+  const cost = estimateStageCost(agentResult.totalUsage, stageDef.model, providerType);
   const costCheck = policyEngine.recordCost(cost, stageName);
   if (!costCheck.ok) {
     eventBus.emit({ type: "stage:error", stageName, error: costCheck.error.message });
@@ -618,6 +717,7 @@ async function executeStageWithDelegateTool(
     status: "success",
     output: agentResult.finalContent,
     usage: agentResult.totalUsage,
+    breakdown: agentResult.breakdown,
     cost,
     durationMs: Date.now() - start,
     contextKeysWritten,

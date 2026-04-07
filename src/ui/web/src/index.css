@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --accent: 6 182 212;
+    --accent-dim: 8 145 178;
+    --accent-soft: 22 78 99;
+    --accent-contrast: 10 10 10;
+    --ink-950: 10 10 10;
+    --ink-900: 15 15 16;
+    --ink-800: 23 23 25;
+    --ink-700: 31 31 34;
+    --ink-600: 42 42 46;
+    --ink-500: 58 58 64;
+    --ink-400: 115 115 120;
+    --ink-300: 163 163 168;
+    --ink-200: 212 212 216;
+    --ink-100: 229 229 231;
+    --overlay: 3 7 18;
+    --grid: 31 31 34;
+    --scroll-thumb: 42 42 46;
+    --scroll-thumb-hover: 58 58 64;
+    --panel-shadow: 0 18px 48px rgb(0 0 0 / 0.32);
+    --panel-shadow-soft: 0 10px 28px rgb(0 0 0 / 0.18);
+    --selection-fg: 10 10 10;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --accent: 14 116 144;
+    --accent-dim: 15 95 115;
+    --accent-soft: 186 230 239;
+    --accent-contrast: 248 250 252;
+    --ink-950: 243 247 251;
+    --ink-900: 255 255 255;
+    --ink-800: 236 242 247;
+    --ink-700: 221 229 236;
+    --ink-600: 196 208 220;
+    --ink-500: 143 156 170;
+    --ink-400: 98 112 128;
+    --ink-300: 55 70 89;
+    --ink-200: 23 37 56;
+    --ink-100: 8 20 34;
+    --overlay: 15 23 42;
+    --grid: 196 208 220;
+    --scroll-thumb: 196 208 220;
+    --scroll-thumb-hover: 143 156 170;
+    --panel-shadow: 0 20px 44px rgb(15 23 42 / 0.08), 0 6px 18px rgb(15 23 42 / 0.05);
+    --panel-shadow-soft: 0 12px 28px rgb(15 23 42 / 0.08);
+    --selection-fg: 248 250 252;
+  }
+
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    background:
+      radial-gradient(circle at top left, rgb(var(--accent) / 0.16), transparent 22rem),
+      radial-gradient(circle at 85% 0%, rgb(var(--accent-soft) / 0.18), transparent 20rem),
+      linear-gradient(180deg, rgb(var(--ink-950)), rgb(var(--ink-900)));
+    color: rgb(var(--ink-100));
+    transition:
+      background-color 180ms ease,
+      color 180ms ease;
+  }
+  ::selection { background: rgb(var(--accent)); color: rgb(var(--selection-fg)); }
+  /* Subtle scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgb(var(--scroll-thumb)); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgb(var(--scroll-thumb-hover)); }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 text-sm border border-ink-600 bg-ink-900 text-ink-100 hover:bg-ink-800 hover:border-ink-500 transition-colors;
+    box-shadow: var(--panel-shadow-soft);
+  }
+  .btn-accent {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 text-sm bg-accent hover:bg-accent-dim font-medium transition-colors;
+    color: rgb(var(--accent-contrast));
+    box-shadow: 0 14px 32px rgb(var(--accent) / 0.18);
+  }
+  .input {
+    @apply w-full px-3 py-1.5 text-sm bg-ink-900 border border-ink-600 text-ink-100 focus:border-accent focus:outline-none placeholder:text-ink-400;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.03);
+  }
+  .panel {
+    @apply bg-ink-900 border border-ink-700;
+    box-shadow: var(--panel-shadow);
+    backdrop-filter: blur(14px);
+  }
+  .label {
+    @apply text-xs uppercase tracking-wider text-ink-400 font-medium;
+  }
+  .row-hover {
+    @apply hover:bg-ink-800 transition-colors cursor-pointer;
+  }
+  .overlay-scrim {
+    background: rgb(var(--overlay) / 0.56);
+    backdrop-filter: blur(10px);
+  }
+}

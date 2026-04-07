@@ -1,7 +1,7 @@
 /**
  * `openthk run` — Execute a pipeline.
  */
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { Command } from "commander";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
@@ -9,7 +9,10 @@ import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor"
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
+import { createPersistedRunTracker } from "../../runs/persistence";
+import { getProjectSkillsDir } from "../../skills/catalog";
 import type { LLMProvider } from "../../shared/types";
+import { hasProjectWorkspace } from "../../workspace";
 
 type RunOptions = {
   pipeline: string;
@@ -95,7 +98,13 @@ export function registerRunCommand(program: Command): void {
 
       // Resolve skills directory
       const pipelineDir = dirname(resolve(options.pipeline));
-      const skillsDir = options.skillsDir ?? resolve(pipelineDir, "skills");
+      const skillsDir =
+        options.skillsDir ??
+        (basename(pipelineDir) === "pipelines" && basename(dirname(pipelineDir)) === ".openthk"
+          ? resolve(pipelineDir, "skills")
+          : hasProjectWorkspace(process.cwd())
+            ? getProjectSkillsDir(process.cwd())
+            : resolve(pipelineDir, "skills"));
 
       // Wire up live event output
       eventBus.on("stage:start", (e) => {
@@ -133,6 +142,13 @@ export function registerRunCommand(program: Command): void {
         }
       });
 
+      const tracker = createPersistedRunTracker({
+        eventBus,
+        pipelineName: config.name,
+        pipelinePath: resolve(options.pipeline),
+        prompt: options.input,
+      });
+
       // Execute
       const result = await executePipeline({
         config,
@@ -147,11 +163,13 @@ export function registerRunCommand(program: Command): void {
       contextStore.close();
 
       if (!result.ok) {
+        tracker.finishWithError(result.error.message);
         console.error(`\nPipeline execution failed: ${result.error.message}`);
         process.exit(1);
       }
 
       const run = result.value;
+      tracker.finishFromResult(run);
       console.log("\n--- Results ---");
       console.log(`Status: ${run.status}`);
       console.log(`Duration: ${run.totalDurationMs}ms`);

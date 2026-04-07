@@ -5,8 +5,17 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
+import { getUiAutostart, setUiAutostart } from "../../config/ui-config";
+import { resolveExecutionOrder } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
-import type { PipelineConfig, StageDefinition } from "../../shared/types";
+import {
+  getBuiltInSkillsDir,
+  getGlobalSkillsDir,
+  getProjectSkillsDir,
+  listBuiltInSkillRefs,
+} from "../../skills/catalog";
+import type { PipelineConfig, StageDefinition, StageResult, TokenUsage } from "../../shared/types";
+import { restartUi, startUi, statusUi, stopUi } from "../../ui/server/lifecycle";
 import {
   type PipelineEntry,
   type PipelineOrigin,
@@ -22,13 +31,17 @@ import {
   setActivePipeline,
   setPipelineDefault,
 } from "../../workspace";
-import { resolveExecutionOrder } from "../../pipeline/executor";
 
 export type ReplState = {
   pipelineConfig: PipelineConfig | null;
   pipelinePath: string | null;
   workingDir: string;
   skillsDir: string | null;
+  /** Snapshot of the most recent pipeline run, populated after `executePipelinePrompt`. */
+  lastRun?: {
+    totals: { usage: TokenUsage; cost: number | null };
+    stages: StageResult[];
+  };
 };
 
 export type SlashCommandResult = {
@@ -120,7 +133,9 @@ function formatPipelineView(cfg: PipelineConfig, state: ReplState): string {
     if (stage.max_iterations) lines.push(`      max iter: ${stage.max_iterations}`);
 
     if (stage.on_fail) {
-      lines.push(`      on_fail:  retry ${stage.on_fail.retry_stage} (max ${stage.on_fail.max_retries})`);
+      lines.push(
+        `      on_fail:  retry ${stage.on_fail.retry_stage} (max ${stage.on_fail.max_retries})`,
+      );
     }
     lines.push("");
   }
@@ -161,7 +176,8 @@ const commands: SlashCommand[] = [
     name: "pipeline",
     aliases: ["p"],
     description: "Manage pipelines: show, list, add, remove, switch, refresh, default",
-    usage: "[list|add <path> [project|user]|remove <name> [project|user]|switch <name>|refresh [name]|default <name> <project|user|clear>|load <path>]",
+    usage:
+      "[list|add <path> [project|user]|remove <name> [project|user]|switch <name>|refresh [name]|default <name> <project|user|clear>|load <path>]",
     async execute(args, state) {
       const parts = args.trim().split(/\s+/);
       const subcommand = parts[0] || "";
@@ -179,9 +195,7 @@ const commands: SlashCommand[] = [
         const pipelines = listAvailablePipelines(state.workingDir);
         if (pipelines.length === 0) {
           return {
-            output:
-              "  No pipelines found.\n" +
-              "  Use /pipeline add <path> to register one.",
+            output: "  No pipelines found.\n" + "  Use /pipeline add <path> to register one.",
           };
         }
 
@@ -222,7 +236,8 @@ const commands: SlashCommand[] = [
         const conflictWarnings = [...new Set(duplicates)]
           .filter((n) => !defaults.has(n))
           .map(
-            (n) => `  ⚠ "${n}" exists in both project and user. Use /pipeline default ${n} <project|user> to set preference.`,
+            (n) =>
+              `  ⚠ "${n}" exists in both project and user. Use /pipeline default ${n} <project|user> to set preference.`,
           );
 
         return {
@@ -270,7 +285,9 @@ const commands: SlashCommand[] = [
         const destPath = join(destDir, fileName);
 
         if (existsSync(destPath)) {
-          return { output: `  Pipeline already exists: ${destPath}\n  Remove it first with /pipeline remove.` };
+          return {
+            output: `  Pipeline already exists: ${destPath}\n  Remove it first with /pipeline remove.`,
+          };
         }
 
         copyFileSync(filePath, destPath);
@@ -301,9 +318,7 @@ const commands: SlashCommand[] = [
         }
 
         // If origin specified, filter to that
-        const toRemove = originFilter
-          ? entries.filter((e) => e.origin === originFilter)
-          : entries;
+        const toRemove = originFilter ? entries.filter((e) => e.origin === originFilter) : entries;
 
         if (toRemove.length === 0) {
           return { output: `  Pipeline "${name}" not found in [${originFilter}].` };
@@ -345,7 +360,9 @@ const commands: SlashCommand[] = [
         const resolved = resolvePipelinePath(state.workingDir, name);
 
         if (resolved === null) {
-          return { output: `  Pipeline "${name}" not found. Use /pipeline list to see available pipelines.` };
+          return {
+            output: `  Pipeline "${name}" not found. Use /pipeline list to see available pipelines.`,
+          };
         }
 
         if ("conflict" in resolved) {
@@ -383,21 +400,30 @@ const commands: SlashCommand[] = [
         const name = parts[1];
         const action = parts[2];
         if (!name || !action) {
-          return { output: "  Usage: /pipeline default <name> <project|user|clear>\n  Sets which origin to prefer when the same pipeline name exists in both project and user." };
+          return {
+            output:
+              "  Usage: /pipeline default <name> <project|user|clear>\n  Sets which origin to prefer when the same pipeline name exists in both project and user.",
+          };
         }
 
         // Validate the pipeline actually exists and has a conflict worth resolving
         const entries = findPipelineConflicts(state.workingDir, name);
         if (entries.length === 0) {
-          return { output: `  Pipeline "${name}" not found. Use /pipeline add <path> to register one.` };
+          return {
+            output: `  Pipeline "${name}" not found. Use /pipeline add <path> to register one.`,
+          };
         }
         if (entries.length < 2 && action !== "clear") {
-          return { output: `  "${name}" only exists in [${entries[0]!.origin}]. No conflict to resolve.` };
+          return {
+            output: `  "${name}" only exists in [${entries[0]!.origin}]. No conflict to resolve.`,
+          };
         }
 
         if (action === "clear") {
           clearPipelineDefault(state.workingDir, name);
-          return { output: `  Cleared default for "${name}". Will ask next time there's a conflict.` };
+          return {
+            output: `  Cleared default for "${name}". Will ask next time there's a conflict.`,
+          };
         }
 
         if (action !== "project" && action !== "user") {
@@ -433,7 +459,9 @@ const commands: SlashCommand[] = [
         // Refresh a specific pipeline by name
         const resolved = resolvePipelinePath(state.workingDir, name);
         if (resolved === null) {
-          return { output: `  Pipeline "${name}" not found. Use /pipeline list to see available pipelines.` };
+          return {
+            output: `  Pipeline "${name}" not found. Use /pipeline list to see available pipelines.`,
+          };
         }
         if ("conflict" in resolved) {
           return {
@@ -559,27 +587,38 @@ const commands: SlashCommand[] = [
     aliases: [],
     description: "List available skills",
     async execute(_args, state) {
-      const skillsDir = state.skillsDir ?? join(state.workingDir, "skills");
-      if (!existsSync(skillsDir)) {
-        return { output: `  Skills directory not found: ${skillsDir}` };
-      }
-
       const skills: string[] = [];
+      const roots = [
+        state.skillsDir ?? getProjectSkillsDir(state.workingDir),
+        getGlobalSkillsDir(),
+        getBuiltInSkillsDir(),
+      ];
       try {
-        const namespaces = readdirSync(skillsDir, { withFileTypes: true });
-        for (const ns of namespaces) {
-          if (!ns.isDirectory()) continue;
-          const nsDir = join(skillsDir, ns.name);
-          const entries = readdirSync(nsDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-            const promptPath = join(nsDir, entry.name, "prompt.md");
-            const hasPrompt = existsSync(promptPath);
-            skills.push(`    ${ns.name}/${entry.name}${hasPrompt ? "" : " (no prompt.md)"}`);
+        for (const skillsDir of [...new Set(roots)]) {
+          if (!existsSync(skillsDir)) continue;
+          const namespaces = readdirSync(skillsDir, { withFileTypes: true });
+          for (const ns of namespaces) {
+            if (!ns.isDirectory()) continue;
+            const nsDir = join(skillsDir, ns.name);
+            const entries = readdirSync(nsDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (!entry.isDirectory()) continue;
+              const promptPath = join(nsDir, entry.name, "prompt.md");
+              const hasPrompt = existsSync(promptPath);
+              const label = `${ns.name}/${entry.name}`;
+              if (!skills.some((line) => line.includes(` ${label}`))) {
+                skills.push(`    ${label}${hasPrompt ? "" : " (no prompt.md)"}`);
+              }
+            }
+          }
+        }
+        for (const label of listBuiltInSkillRefs()) {
+          if (!skills.some((line) => line.includes(` ${label}`))) {
+            skills.push(`    ${label}`);
           }
         }
       } catch {
-        return { output: `  Error reading skills directory: ${skillsDir}` };
+        return { output: "  Error reading skill directories." };
       }
 
       if (skills.length === 0) {
@@ -602,12 +641,130 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    name: "tokens",
+    aliases: ["cost"],
+    description: "Show token usage and cost breakdown for the last pipeline run",
+    async execute(_args, state) {
+      const run = state.lastRun;
+      if (!run) {
+        return { output: "  No pipeline run yet. Run a prompt first, then call /tokens." };
+      }
+      const lines: string[] = [];
+      lines.push("");
+      lines.push("  Last run — token & cost breakdown");
+      lines.push("");
+      const fmt = (n: number) => n.toLocaleString("en-US");
+      const fmtCost = (c: number | null) => (c === null ? "$—" : `$${c.toFixed(4)}`);
+      for (const stage of run.stages) {
+        const u = stage.usage;
+        const tokens = u
+          ? `${fmt(u.totalTokens)} tok (in ${fmt(u.promptTokens)} / out ${fmt(u.completionTokens)})`
+          : "—";
+        lines.push(`  • ${stage.stageName}  ${tokens}  ${fmtCost(stage.cost ?? null)}`);
+        const b = stage.breakdown;
+        if (b) {
+          const toolTotal = Object.values(b.toolResultBytes).reduce((a, n) => a + n, 0);
+          if (toolTotal) {
+            const perTool = Object.entries(b.toolResultBytes)
+              .sort((a, z) => z[1] - a[1])
+              .map(([k, v]) => `${k}=${fmt(v)}`)
+              .join(", ");
+            lines.push(`      tool results: ${fmt(toolTotal)} B  (${perTool})`);
+          }
+          if (b.contextBytes) lines.push(`      context:      ${fmt(b.contextBytes)} B`);
+          if (b.persistentContextBytes)
+            lines.push(`      persistent:   ${fmt(b.persistentContextBytes)} B`);
+        }
+      }
+      lines.push("");
+      const t = run.totals;
+      lines.push(`  Total: ${fmt(t.usage.totalTokens)} tok   ${fmtCost(t.cost)}`);
+      lines.push("");
+      return { output: lines.join("\n") };
+    },
+  },
+  {
     name: "clear",
     aliases: [],
     description: "Clear the terminal screen",
     async execute() {
       process.stdout.write("\x1b[2J\x1b[H");
       return { output: "" };
+    },
+  },
+  {
+    name: "ui",
+    aliases: [],
+    description: "Manage the web UI: start, stop, status, restart, open, autostart",
+    usage: "[start|stop|status|restart|open|autostart on|off]",
+    async execute(args) {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      const sub = (parts[0] ?? "status").toLowerCase();
+
+      if (sub === "start") {
+        const result = await startUi({});
+        if (!result.ok) return { output: `  UI start failed: ${result.error.message}` };
+        const { pid, port, alreadyRunning } = result.value;
+        const msg = alreadyRunning ? "already running" : "started";
+        return { output: `  UI ${msg} at http://127.0.0.1:${port} (pid ${pid})` };
+      }
+
+      if (sub === "stop") {
+        const result = await stopUi();
+        if (!result.ok) return { output: `  UI stop failed: ${result.error.message}` };
+        return {
+          output: result.value.stopped
+            ? `  UI stopped (pid ${result.value.pid})`
+            : "  UI was not running.",
+        };
+      }
+
+      if (sub === "restart") {
+        const result = await restartUi({});
+        if (!result.ok) return { output: `  UI restart failed: ${result.error.message}` };
+        return {
+          output: `  UI restarted at http://127.0.0.1:${result.value.port} (pid ${result.value.pid})`,
+        };
+      }
+
+      if (sub === "open") {
+        const status = statusUi();
+        if (!status.running) return { output: "  UI is not running. Use /ui start." };
+        const platform = process.platform;
+        const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
+        try {
+          // Lazy import to keep top of file clean
+          const { spawn } = await import("node:child_process");
+          spawn(cmd, [status.url], { detached: true, stdio: "ignore" }).unref();
+        } catch {
+          // ignore
+        }
+        return { output: `  Opening ${status.url}` };
+      }
+
+      if (sub === "autostart") {
+        const value = (parts[1] ?? "").toLowerCase();
+        if (value !== "on" && value !== "off") {
+          const current = getUiAutostart();
+          const state = current === undefined ? "unset" : current ? "on" : "off";
+          return {
+            output: `  UI autostart: ${state}\n  Use /ui autostart on|off to change.`,
+          };
+        }
+        setUiAutostart(value === "on");
+        return { output: `  UI autostart set to ${value}.` };
+      }
+
+      // status (default)
+      const status = statusUi();
+      if (!status.running) return { output: "  UI is not running. Use /ui start." };
+      return {
+        output: [
+          `  UI running at ${status.url}`,
+          `    pid:     ${status.pid}`,
+          `    started: ${status.startedAt}`,
+        ].join("\n"),
+      };
     },
   },
   {

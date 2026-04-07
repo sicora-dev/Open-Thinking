@@ -4,12 +4,13 @@
  * so they persist across all projects.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Result, err, ok } from "../shared/result";
+import { getOpenthkConfigDir } from "./paths";
 
-const CONFIG_DIR = join(homedir(), ".openthk");
-const PROVIDERS_FILE = join(CONFIG_DIR, "providers.json");
+function getProvidersFile(): string {
+  return join(getOpenthkConfigDir(), "providers.json");
+}
 
 export type ProviderEntry = {
   id: string;
@@ -25,18 +26,20 @@ export type GlobalConfig = {
 };
 
 function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const configDir = getOpenthkConfigDir();
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
   }
 }
 
 export function loadGlobalConfig(): GlobalConfig {
   ensureConfigDir();
-  if (!existsSync(PROVIDERS_FILE)) {
+  const providersFile = getProvidersFile();
+  if (!existsSync(providersFile)) {
     return { providers: {} };
   }
   try {
-    const raw = readFileSync(PROVIDERS_FILE, "utf-8");
+    const raw = readFileSync(providersFile, "utf-8");
     return JSON.parse(raw) as GlobalConfig;
   } catch {
     return { providers: {} };
@@ -46,7 +49,7 @@ export function loadGlobalConfig(): GlobalConfig {
 export function saveGlobalConfig(config: GlobalConfig): Result<void> {
   try {
     ensureConfigDir();
-    writeFileSync(PROVIDERS_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    writeFileSync(getProvidersFile(), JSON.stringify(config, null, 2), { mode: 0o600 });
     return ok(undefined);
   } catch (e) {
     return err(new Error(`Failed to save config: ${(e as Error).message}`));
@@ -86,7 +89,7 @@ export function hasAnyProviders(): boolean {
 }
 
 export function getConfigDir(): string {
-  return CONFIG_DIR;
+  return getOpenthkConfigDir();
 }
 
 /**

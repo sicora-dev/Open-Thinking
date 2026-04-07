@@ -1,2 +1,2 @@
-export { createToolRegistry, type ToolRegistry } from "./tool-registry";
+export { createToolRegistry, type ToolRegistry, type ContextAccess } from "./tool-registry";
 export { createDelegateTool, type DelegateDeps } from "./delegate-tool";

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 /**
  * Interactive REPL shell for OpenThinking.
  * Opens when you run `openthk` — like Claude Code or Codex.
@@ -12,7 +12,11 @@ import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor"
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
+import { createPersistedRunTracker } from "../../runs/persistence";
+import { getProjectSkillsDir } from "../../skills/catalog";
 import type { LLMProvider } from "../../shared/types";
+import { maybeAutostartUi } from "../../ui/autostart";
+import { VERSION } from "../../version";
 import {
   ensureGlobalWorkspace,
   getActivePipelineName,
@@ -26,9 +30,14 @@ import {
   setActivePipeline,
   writeHistoryEntry,
 } from "../../workspace";
-import { VERSION } from "../../version";
-import { attachSlashCompletion, type KeypressEvent } from "./slash-completion";
-import { type ReplState, executeSlashCommand, getCommandCompletions, getCompletionEntries } from "./slash-commands";
+import {
+  type ReplState,
+  executeSlashCommand,
+  getCommandCompletions,
+  getCompletionEntries,
+} from "./slash-commands";
+import { type KeypressEvent, attachSlashCompletion } from "./slash-completion";
+import { createTokenMeter } from "./token-meter";
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -127,7 +136,9 @@ async function resolvePipelineOnStartup(workingDir: string): Promise<Partial<Rep
 
   if (available.length > 1) {
     // Multiple pipelines — show hint, let user choose
-    console.log(`  ${c("dim", `${available.length} pipelines available — use /pipeline list to choose`)}`);
+    console.log(
+      `  ${c("dim", `${available.length} pipelines available — use /pipeline list to choose`)}`,
+    );
     return {};
   }
 
@@ -218,13 +229,26 @@ async function executePipelinePrompt(
     : ":memory:";
   const contextStore = createContextStore({ dbPath });
   const eventBus = createEventBus();
+  const meter = createTokenMeter({ eventBus });
+  const tracker = createPersistedRunTracker({
+    eventBus,
+    pipelineName: config.name,
+    pipelinePath: state.pipelinePath,
+    prompt: input,
+  });
 
   // Seed user input
   await contextStore.set("input.prompt", input, "user");
 
   // Resolve skills directory
   const pipelineDir = state.pipelinePath ? dirname(resolve(state.pipelinePath)) : state.workingDir;
-  const skillsDir = state.skillsDir ?? resolve(pipelineDir, "skills");
+  const skillsDir =
+    state.skillsDir ??
+    (basename(pipelineDir) === "pipelines" && basename(dirname(pipelineDir)) === ".openthk"
+      ? resolve(pipelineDir, "skills")
+      : hasProjectWorkspace(state.workingDir)
+        ? getProjectSkillsDir(state.workingDir)
+        : resolve(pipelineDir, "skills"));
 
   // Wire up live events
   eventBus.on("stage:start", (e) => {
@@ -283,7 +307,9 @@ async function executePipelinePrompt(
         }
       }
 
-      console.log(`  ${icon} ${stageName} ${c("dim", `${durationMs}ms ${tokens}`)}${summaryText}${reasonText}`);
+      console.log(
+        `  ${icon} ${stageName} ${c("dim", `${durationMs}ms ${tokens}`)}${summaryText}${reasonText}`,
+      );
     }
   });
   eventBus.on("stage:error", (e) => {
@@ -308,7 +334,9 @@ async function executePipelinePrompt(
   eventBus.on("delegate:complete", (e) => {
     if (e.type === "delegate:complete") {
       const tokens = e.result.usage ? `${e.result.usage.totalTokens} tokens` : "";
-      console.log(`    ${c("green", "◂")} ${e.agentName} ${c("dim", `${e.durationMs}ms ${tokens}`)}`);
+      console.log(
+        `    ${c("green", "◂")} ${e.agentName} ${c("dim", `${e.durationMs}ms ${tokens}`)}`,
+      );
     }
   });
   eventBus.on("delegate:error", (e) => {
@@ -350,18 +378,39 @@ async function executePipelinePrompt(
     });
   }
 
+  // Start the live token meter. While active, route console.log through
+  // its quiet-zone so event-handler output never collides with the spinner
+  // line. We restore the original console.log in `finally` below.
+  const originalLog = console.log;
+  meter.start();
+  console.log = (...args: unknown[]) => {
+    meter.withQuietZone(() => originalLog(...args));
+  };
+
   // Execute pipeline
-  const result = await executePipeline({
-    config,
-    providers,
-    contextStore,
-    policyEngine: policyResult.value,
-    eventBus,
-    workingDir: state.workingDir,
-    skillsDir,
-    signal: abortController?.signal,
-    onTokenLimit,
-  });
+  let result: Awaited<ReturnType<typeof executePipeline>>;
+  try {
+    result = await executePipeline({
+      config,
+      providers,
+      contextStore,
+      policyEngine: policyResult.value,
+      eventBus,
+      workingDir: state.workingDir,
+      skillsDir,
+      signal: abortController?.signal,
+      onTokenLimit,
+    });
+  } finally {
+    meter.stop();
+    console.log = originalLog;
+  }
+
+  // Stash the run summary on state for /tokens to inspect later.
+  state.lastRun = {
+    totals: meter.totals(),
+    stages: result.ok ? result.value.stages : [],
+  };
 
   contextStore.close();
 
@@ -388,6 +437,7 @@ async function executePipelinePrompt(
   }
 
   if (!result.ok) {
+    tracker.finishWithError(result.error.message, abortController?.signal.aborted ?? false);
     if (abortController?.signal.aborted) {
       console.log(`\n  ${c("yellow", "Pipeline cancelled by user.")}\n`);
     } else {
@@ -397,6 +447,7 @@ async function executePipelinePrompt(
   }
 
   const run = result.value;
+  tracker.finishFromResult(run, abortController?.signal.aborted ?? false);
   console.log();
 
   // Show results
@@ -440,6 +491,7 @@ export async function startRepl(workingDir?: string): Promise<void> {
   // First-run: ensure global ~/.openthk/ exists
   ensureGlobalWorkspace();
   await checkFirstRun();
+  await maybeAutostartUi();
 
   // Resolve which pipeline to load
   const detected = await resolvePipelineOnStartup(cwd);
@@ -566,7 +618,9 @@ export async function startRepl(workingDir?: string): Promise<void> {
   rl.on("SIGINT", () => {
     if (activeAbortController) {
       activeAbortController.abort();
-      console.log(`\n  ${c("yellow", "⚠")} ${c("bold", "Cancelling pipeline...")} ${c("dim", "waiting for current operation to finish")}`);
+      console.log(
+        `\n  ${c("yellow", "⚠")} ${c("bold", "Cancelling pipeline...")} ${c("dim", "waiting for current operation to finish")}`,
+      );
     } else {
       console.log(`\n  ${c("dim", "Use /exit or Ctrl+D to quit.")}`);
       console.log(getSeparator());

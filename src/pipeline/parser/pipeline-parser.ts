@@ -215,6 +215,19 @@ const validateConfig = (
       );
     }
 
+    if (
+      stage.system_message !== undefined &&
+      typeof stage.system_message !== "string"
+    ) {
+      return err(
+        new PipelineError(
+          `Stage "${stageName}" has invalid 'system_message'. It must be a string.`,
+          "VALIDATION_ERROR",
+          { stageName },
+        ),
+      );
+    }
+
     // Validate depends_on references
     if (stage.depends_on && Array.isArray(stage.depends_on)) {
       const stageNames = Object.keys(stages);

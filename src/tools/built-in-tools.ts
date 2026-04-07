@@ -6,14 +6,27 @@
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import type { PolicyEngine } from "../policies/engine";
 import { err, ok } from "../shared/result";
-import type { ToolFunction } from "../shared/types";
+import type {
+  ContextStore,
+  StageContextPermissions,
+  ToolFunction,
+} from "../shared/types";
+import { filterCommandOutput } from "./output-filters";
 
-const MAX_FILE_SIZE = 100 * 1024; // 100KB
+/**
+ * Lower than the previous 100KB cap. Most useful files (source code,
+ * config) fit easily in 32KB; for anything larger, the agent should
+ * use the offset/limit parameters to page through.
+ */
+const MAX_FILE_SIZE = 32 * 1024; // 32KB
 const MAX_LIST_ENTRIES = 500;
 const MAX_COMMAND_OUTPUT = 50 * 1024; // 50KB
 const MAX_SEARCH_MATCHES = 100;
 const DEFAULT_COMMAND_TIMEOUT = 30_000;
+/** Hard cap on lines returned by a single read_file call. */
+const READ_FILE_MAX_LINES = 1500;
 
 /**
  * Validate that a resolved path is within the working directory.
@@ -27,30 +40,113 @@ function safePath(workingDir: string, filePath: string): string | null {
   return resolved;
 }
 
+/**
+ * Per-stage cache for `read_file`. Keyed by absolute path, stores the
+ * file's mtime (ms) and the content already shown to the agent.
+ *
+ * If the agent re-reads an unchanged file in the same stage, we
+ * return a one-line acknowledgement instead of the full body — saving
+ * a round-trip's worth of tokens. The agent has the content in its
+ * working memory already (as the previous tool result).
+ */
+type ReadCacheEntry = { mtimeMs: number; size: number };
+
 export function createReadFileTool(workingDir: string): ToolFunction {
+  // Cache lifetime = lifetime of this tool function = one stage run.
+  const sessionCache = new Map<string, ReadCacheEntry>();
+
   return {
     name: "read_file",
-    description: "Read the contents of a file. Returns the file content as a string.",
+    description:
+      "Read the contents of a file. Supports paging via offset/limit (1-indexed line numbers). " +
+      "If you call this twice on an unchanged file in the same stage, you'll get a 'cached' marker — " +
+      "the previous content is already in your working memory. " +
+      `Files over ${MAX_FILE_SIZE / 1024}KB or ${READ_FILE_MAX_LINES} lines must be paged with offset/limit.`,
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path relative to the project root" },
+        offset: {
+          type: "number",
+          description:
+            "1-indexed line number to start reading from. Default: 1 (start of file).",
+        },
+        limit: {
+          type: "number",
+          description: `Maximum number of lines to return. Default and max: ${READ_FILE_MAX_LINES}.`,
+        },
       },
       required: ["path"],
     },
     async execute(args) {
       const filePath = args.path as string;
+      const offset = typeof args.offset === "number" ? Math.max(1, Math.floor(args.offset)) : 1;
+      const limitArg =
+        typeof args.limit === "number" ? Math.floor(args.limit) : READ_FILE_MAX_LINES;
+      const limit = Math.min(Math.max(1, limitArg), READ_FILE_MAX_LINES);
+
       const resolved = safePath(workingDir, filePath);
       if (!resolved) return err(new Error(`Path traversal blocked: ${filePath}`));
       if (!existsSync(resolved)) return err(new Error(`File not found: ${filePath}`));
 
       const stat = statSync(resolved);
       if (stat.isDirectory()) return err(new Error(`Path is a directory: ${filePath}`));
-      if (stat.size > MAX_FILE_SIZE) {
-        const content = readFileSync(resolved, "utf-8").slice(0, MAX_FILE_SIZE);
-        return ok(`${content}\n\n[... truncated, file is ${stat.size} bytes]`);
+
+      // Cache check — only suppress when no offset/limit was used,
+      // since paged reads may legitimately re-fetch different ranges.
+      const cached = sessionCache.get(resolved);
+      const fullRead = offset === 1 && limitArg === READ_FILE_MAX_LINES;
+      if (cached && fullRead && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        return ok(
+          `[cached: ${filePath} unchanged since the previous read in this stage. ` +
+            "The content is in your working memory — do not re-process it.]",
+        );
       }
-      return ok(readFileSync(resolved, "utf-8"));
+
+      let raw: string;
+      try {
+        raw = readFileSync(resolved, "utf-8");
+      } catch (e) {
+        return err(new Error(`Failed to read ${filePath}: ${(e as Error).message}`));
+      }
+
+      const lines = raw.split("\n");
+      const totalLines = lines.length;
+
+      // Slice with offset/limit
+      const startIdx = offset - 1;
+      const endIdx = Math.min(startIdx + limit, totalLines);
+      const slice = lines.slice(startIdx, endIdx).join("\n");
+
+      // Apply byte cap as a hard secondary safety net.
+      let body = slice;
+      let byteTruncated = false;
+      if (new TextEncoder().encode(body).length > MAX_FILE_SIZE) {
+        body = body.slice(0, MAX_FILE_SIZE);
+        byteTruncated = true;
+      }
+
+      const notes: string[] = [];
+      if (offset > 1 || endIdx < totalLines) {
+        notes.push(
+          `Showing lines ${offset}–${endIdx} of ${totalLines}. ` +
+            (endIdx < totalLines
+              ? `Use offset=${endIdx + 1} for the next page.`
+              : "End of file."),
+        );
+      }
+      if (byteTruncated) {
+        notes.push(
+          `Output truncated at ${MAX_FILE_SIZE / 1024}KB. Use a smaller limit to page.`,
+        );
+      }
+
+      // Update cache only on a full read.
+      if (fullRead) {
+        sessionCache.set(resolved, { mtimeMs: stat.mtimeMs, size: stat.size });
+      }
+
+      return ok(notes.length > 0 ? `${body}\n\n[${notes.join(" ")}]` : body);
     },
   };
 }
@@ -123,6 +219,15 @@ export function createListFilesTool(workingDir: string): ToolFunction {
       }
 
       walk(resolved);
+
+      // Token-efficient grouping: when there are too many entries to
+      // fit comfortably in a prompt, collapse them into a per-directory
+      // summary with file counts. The agent can drill down with a
+      // narrower path argument if it actually needs the leaf names.
+      if (entries.length > GROUPING_THRESHOLD) {
+        return ok(formatGroupedListing(entries, entries.length >= MAX_LIST_ENTRIES));
+      }
+
       const suffix =
         entries.length >= MAX_LIST_ENTRIES
           ? `\n[... truncated at ${MAX_LIST_ENTRIES} entries]`
@@ -130,6 +235,64 @@ export function createListFilesTool(workingDir: string): ToolFunction {
       return ok(entries.join("\n") + suffix);
     },
   };
+}
+
+/** Threshold above which `list_files` switches to grouped output. */
+const GROUPING_THRESHOLD = 100;
+
+/**
+ * Group a flat path listing by parent directory and emit a per-dir
+ * summary with counts. Always lists subdirectories explicitly so the
+ * agent can recurse into them.
+ */
+function formatGroupedListing(entries: string[], wasTruncated: boolean): string {
+  type Group = { dirs: Set<string>; files: number };
+  const byParent = new Map<string, Group>();
+
+  for (const entry of entries) {
+    const isDir = entry.endsWith("/");
+    const trimmed = isDir ? entry.slice(0, -1) : entry;
+    const slash = trimmed.lastIndexOf("/");
+    const parent = slash === -1 ? "." : trimmed.slice(0, slash);
+
+    let group = byParent.get(parent);
+    if (!group) {
+      group = { dirs: new Set(), files: 0 };
+      byParent.set(parent, group);
+    }
+
+    if (isDir) {
+      group.dirs.add(`${trimmed.slice(slash + 1)}/`);
+    } else {
+      group.files++;
+    }
+  }
+
+  const lines: string[] = [
+    `[grouped view: ${entries.length} entries across ${byParent.size} directories. ` +
+      "Call list_files with a more specific path to see leaf filenames.]",
+    "",
+  ];
+
+  const sortedParents = [...byParent.keys()].sort();
+  for (const parent of sortedParents) {
+    const group = byParent.get(parent);
+    if (!group) continue;
+    const fileLabel = group.files === 1 ? "1 file" : `${group.files} files`;
+    lines.push(`${parent}/  (${fileLabel})`);
+    if (group.dirs.size > 0) {
+      const sortedDirs = [...group.dirs].sort();
+      for (const dir of sortedDirs) {
+        lines.push(`  ${dir}`);
+      }
+    }
+  }
+
+  if (wasTruncated) {
+    lines.push("", `[... truncated at ${MAX_LIST_ENTRIES} entries]`);
+  }
+
+  return lines.join("\n");
 }
 
 export function createRunCommandTool(workingDir: string): ToolFunction {
@@ -157,7 +320,8 @@ export function createRunCommandTool(workingDir: string): ToolFunction {
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
         });
-        return ok(output || "(no output)");
+        const filtered = filterCommandOutput(command, output);
+        return ok(filtered || "(no output)");
       } catch (e) {
         const execError = e as {
           stdout?: string;
@@ -165,8 +329,10 @@ export function createRunCommandTool(workingDir: string): ToolFunction {
           status?: number;
           message: string;
         };
-        const stdout = execError.stdout ?? "";
-        const stderr = execError.stderr ?? "";
+        const stdout = filterCommandOutput(command, execError.stdout ?? "");
+        // Only ANSI-strip stderr — error messages should pass through
+        // largely unfiltered so the agent can react to them.
+        const stderr = filterCommandOutput(command, execError.stderr ?? "");
         const status = execError.status ?? 1;
         return ok(`Exit code: ${status}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`);
       }
@@ -242,6 +408,64 @@ export function createSearchFilesTool(workingDir: string): ToolFunction {
           ? `\n[... truncated at ${MAX_SEARCH_MATCHES} matches]`
           : "";
       return ok(matches.join("\n") + suffix);
+    },
+  };
+}
+
+/**
+ * `get_context` tool — fetches a single context store entry on demand.
+ *
+ * This tool is the cornerstone of lazy context loading: instead of inlining
+ * the full context payload into every system prompt, the agent receives
+ * only an *index* and uses this tool to pull values it actually needs.
+ * It saves a large fraction of tokens for stages with broad read globs.
+ *
+ * Access control: every read goes through the policy engine. The agent
+ * cannot fetch keys outside of its declared `context.read` permissions.
+ */
+export function createGetContextTool(
+  contextStore: ContextStore,
+  permissions: StageContextPermissions,
+  policyEngine: PolicyEngine,
+  stageName: string,
+): ToolFunction {
+  return {
+    name: "get_context",
+    description:
+      "Fetch the full value of a single context store entry by key. " +
+      "Use this to access the body of large context entries that the system prompt only listed in the index. " +
+      "Returns an error if the key is missing or outside your read permissions.",
+    parameters: {
+      type: "object",
+      properties: {
+        key: {
+          type: "string",
+          description:
+            "The context key to fetch (e.g. 'planner.output'). Must match a key from the available-context-keys index.",
+        },
+      },
+      required: ["key"],
+    },
+    async execute(args) {
+      const key = args.key;
+      if (typeof key !== "string" || !key) {
+        return err(new Error("get_context requires a non-empty 'key' argument"));
+      }
+
+      // Enforce read policy before touching the store.
+      // Exception: `persistent.*` keys are project-wide metadata seeded
+      // by the executor (learned notes, history). They are always
+      // readable — they exist precisely because the system prompt
+      // doesn't inline them anymore.
+      if (!key.startsWith("persistent.")) {
+        const access = policyEngine.checkRead(stageName, permissions, key);
+        if (!access.ok) return err(access.error);
+      }
+
+      const result = await contextStore.get(key);
+      if (!result.ok) return err(result.error);
+      if (!result.value) return err(new Error(`Context key not found: ${key}`));
+      return ok(result.value.value);
     },
   };
 }

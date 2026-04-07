@@ -21,6 +21,6 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".openthk"]
+    "ignore": ["node_modules", "dist", ".openthk", "src/ui/web/node_modules", "src/ui/web/dist"]
   }
 }

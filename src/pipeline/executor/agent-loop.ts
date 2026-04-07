@@ -18,12 +18,14 @@
  */
 import type { EventBus } from "../../core/events/event-bus";
 import { type Result, err, ok } from "../../shared/result";
-import type {
-  ChatRequest,
-  LLMProvider,
-  Message,
-  ToolDefinition,
-  TokenUsage,
+import {
+  type ChatRequest,
+  type LLMProvider,
+  type Message,
+  type TokenBreakdown,
+  type TokenUsage,
+  type ToolDefinition,
+  emptyBreakdown,
 } from "../../shared/types";
 import type { ToolRegistry } from "../../tools";
 
@@ -36,6 +38,15 @@ export type AgentLoopConfig = {
   maxIterations: number;
   eventBus: EventBus;
   stageName: string;
+  /** Provider type — used for live cost reporting (local providers cost $0). */
+  providerType?: string;
+  /**
+   * Initial breakdown values. The executor passes the bytes of the
+   * context block and persistent context block already injected into
+   * the request, so the meter can attribute them.
+   */
+  initialContextBytes?: number;
+  initialPersistentContextBytes?: number;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
   /**
@@ -58,6 +69,8 @@ export type AgentLoopResult = {
   messages: Message[];
   /** Aggregated token usage across all iterations. */
   totalUsage: TokenUsage;
+  /** Per-tool / per-context token spend breakdown. */
+  breakdown: TokenBreakdown;
   /** Number of LLM calls made. */
   iterations: number;
   /** Why the loop stopped. */
@@ -311,6 +324,9 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
   // State
   const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const breakdown: TokenBreakdown = emptyBreakdown();
+  breakdown.contextBytes = config.initialContextBytes ?? 0;
+  breakdown.persistentContextBytes = config.initialPersistentContextBytes ?? 0;
   const fullHistory: Message[] = [...request.messages];
   let lastExchange: Message[] = [];
   let finalContent = "";
@@ -319,6 +335,21 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   let stopReason: StopReason = "done";
   const filesWritten: string[] = [];
   const commandsRun: string[] = [];
+
+  function emitTokensUpdate(): void {
+    eventBus.emit({
+      type: "tokens:update",
+      stageName,
+      model: request.model,
+      providerType: config.providerType ?? "openai-compatible",
+      iteration: iterations,
+      usage: { ...totalUsage },
+      breakdown: {
+        ...breakdown,
+        toolResultBytes: { ...breakdown.toolResultBytes },
+      },
+    });
+  }
 
   // Doom loop tracking
   const recentCalls: ToolCallSignature[] = [];
@@ -352,6 +383,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       currentMessages.push(windDownMsg);
     }
 
+    eventBus.emit({ type: "thinking:start", stageName });
     const chatResult = await provider.chat({
       ...request,
       systemPrompt,
@@ -360,6 +392,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       tools: isFinalIteration ? [] : registry.definitions(),
       signal,
     });
+    eventBus.emit({ type: "thinking:end", stageName });
 
     if (!chatResult.ok) {
       return err(chatResult.error);
@@ -371,6 +404,10 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
     totalUsage.promptTokens += response.usage.promptTokens;
     totalUsage.completionTokens += response.usage.completionTokens;
     totalUsage.totalTokens += response.usage.totalTokens;
+    breakdown.promptTokens = totalUsage.promptTokens;
+    breakdown.completionTokens = totalUsage.completionTokens;
+    breakdown.totalTokens = totalUsage.totalTokens;
+    emitTokensUpdate();
 
     // Build assistant message and start collecting this round's exchange
     const assistantMsg: Message = {
@@ -503,6 +540,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
       // ── Truncate large tool outputs ────────────────────────
       resultContent = truncateToolOutput(resultContent);
 
+      // Track bytes per tool for the breakdown / live meter.
+      const resultBytes = new TextEncoder().encode(resultContent).length;
+      breakdown.toolResultBytes[toolName] =
+        (breakdown.toolResultBytes[toolName] ?? 0) + resultBytes;
+
       eventBus.emit({
         type: "tool:result",
         stageName,
@@ -541,6 +583,14 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
   }
 
   const workSummary = { filesWritten, commandsRun };
-  return ok({ finalContent, messages: fullHistory, totalUsage, iterations, stopReason, workSummary });
+  return ok({
+    finalContent,
+    messages: fullHistory,
+    totalUsage,
+    breakdown,
+    iterations,
+    stopReason,
+    workSummary,
+  });
 }
 

@@ -366,13 +366,16 @@ describe("executePipeline", () => {
     const config = makePipelineConfig({
       s1: {
         provider: "mock",
-        model: "m",
+        // Use a model present in the pricing table so cost is non-null.
+        // Unknown models intentionally produce null/0 cost under the new
+        // pricing rules — see src/providers/pricing.ts.
+        model: "gpt-4o",
         skill: "s",
         context: { read: [], write: ["s1.*"] },
       },
       s2: {
         provider: "mock",
-        model: "m",
+        model: "gpt-4o",
         skill: "s",
         context: { read: [], write: ["s2.*"] },
       },
@@ -400,8 +403,55 @@ describe("executePipeline (orchestrated)", () => {
     store = createContextStore({ dbPath: ":memory:" });
   });
 
-  test("runs orchestrator stage in orchestrated mode", async () => {
-    const provider = mockProvider("Orchestration complete");
+  test("runs orchestrator and delegates work in orchestrated mode", async () => {
+    let callCount = 0;
+    const provider: LLMProvider = {
+      ...mockProvider("Orchestration complete"),
+      chat: mock(() => {
+        callCount += 1;
+        if (callCount === 1) {
+          return Promise.resolve(
+            ok({
+              id: "1",
+              model: "m",
+              content: "",
+              toolCalls: [
+                {
+                  id: "delegate-1",
+                  type: "function",
+                  function: {
+                    name: "delegate",
+                    arguments: JSON.stringify({ agent: "coder", task: "Implement the task" }),
+                  },
+                },
+              ],
+              usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+              finishReason: "tool_calls" as const,
+            }),
+          );
+        }
+        if (callCount === 2) {
+          return Promise.resolve(
+            ok({
+              id: "2",
+              model: "m",
+              content: "implemented",
+              usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+              finishReason: "stop" as const,
+            }),
+          );
+        }
+        return Promise.resolve(
+          ok({
+            id: "3",
+            model: "m",
+            content: "Orchestration complete",
+            usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+            finishReason: "stop" as const,
+          }),
+        );
+      }),
+    };
     const config = makePipelineConfig(
       {
         orchestrator: {
@@ -427,10 +477,42 @@ describe("executePipeline (orchestrated)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // Only the orchestrator runs directly — coder is available via delegate
+    // Only the orchestrator is reported at pipeline level — coder runs via delegate
     expect(result.value.stages).toHaveLength(1);
     expect(result.value.stages[0].stageName).toBe("orchestrator");
     expect(result.value.stages[0].status).toBe("success");
+
+    store.close();
+  });
+
+  test("fails if orchestrator does not delegate any work", async () => {
+    const provider = mockProvider("I need more information");
+    const config = makePipelineConfig(
+      {
+        orchestrator: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/orchestrator",
+          role: "orchestrator",
+          context: { read: ["*"], write: ["orchestrator.*"] },
+        },
+        coder: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/coder",
+          context: { read: ["*"], write: ["coder.*"] },
+        },
+      },
+      { mode: "orchestrated" },
+    );
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    const result = await executePipeline(deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.status).toBe("failed");
+    expect(result.value.stages[0]?.error).toContain("finished without delegating");
 
     store.close();
   });
