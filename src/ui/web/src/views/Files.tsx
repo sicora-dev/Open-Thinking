@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icons } from "../components/Icons";
+import { api, type FsEntry, type PipelineEntry } from "../lib/api";
 
 const btnGhost: React.CSSProperties = {
   display: "inline-flex",
@@ -14,104 +15,182 @@ const btnGhost: React.CSSProperties = {
   fontFamily: "inherit",
 };
 
-type TreeNode = {
-  depth: number;
-  name: string;
-  dir?: boolean;
-  open?: boolean;
-  size?: string;
-};
-
-const tree: TreeNode[] = [
-  { depth: 0, name: ".openthk/", dir: true, open: true },
-  { depth: 1, name: "pipelines/", dir: true, open: true },
-  { depth: 2, name: "default.yaml", size: "1.2 KB" },
-  { depth: 2, name: "triage.yaml", size: "0.8 KB" },
-  { depth: 1, name: "project.md", size: "2.4 KB" },
-  { depth: 1, name: "context.db", size: "184 KB" },
-  { depth: 1, name: "history/", dir: true },
-  { depth: 1, name: "learned/", dir: true },
-  { depth: 0, name: "skills/", dir: true, open: true },
-  { depth: 1, name: "openthk/", dir: true },
-  { depth: 1, name: "local/", dir: true },
-  { depth: 0, name: "openthk.pipeline.yaml", size: "1.2 KB" },
-  { depth: 0, name: "src/", dir: true },
-  { depth: 0, name: "package.json", size: "1.5 KB" },
-  { depth: 0, name: "README.md", size: "5.8 KB" },
-];
-
-const previewText = `# Preview of openthk.pipeline.yaml
-
-name: feature-development
-version: "1.0"
-
-providers:
-  - anthropic
-  - openai
-
-stages:
-  planning:
-    provider: anthropic
-    model: claude-opus-4-5-20250520
-    skill: openthk/arch-planner@1.0
-    ...`;
-
 export function Files() {
-  const [sel, setSel] = useState("openthk.pipeline.yaml");
+  const [cwd, setCwd] = useState("");
+  const [parent, setParent] = useState("");
+  const [entries, setEntries] = useState<FsEntry[]>([]);
+  const [selected, setSelected] = useState<FsEntry | null>(null);
+  const [pipelines, setPipelines] = useState<PipelineEntry[]>([]);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [showHidden, setShowHidden] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadDir = useCallback(async (path?: string, hidden = false) => {
+    setLoading(true);
+    try {
+      const result = await api.browse(path, { showHidden: hidden });
+      setCwd(result.path);
+      setParent(result.parent);
+      setEntries(result.entries);
+      setSelected(null);
+      setPreview(null);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.listProjects(), api.listPipelines()])
+      .then(([projects, pipelineList]) => {
+        if (cancelled) return;
+        setPipelines(pipelineList);
+        const startPath = projects[0]?.path ?? pipelineList[0]?.rootPath;
+        loadDir(startPath, showHidden);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError((e as Error).message);
+        loadDir(undefined, showHidden);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadDir]);
+
+  const selectedPipeline = useMemo(
+    () => selected ? pipelines.find((pipeline) => pipeline.path === selected.path) ?? null : null,
+    [pipelines, selected],
+  );
+
+  const selectEntry = async (entry: FsEntry) => {
+    if (entry.isDir) {
+      await loadDir(entry.path, showHidden);
+      return;
+    }
+
+    setSelected(entry);
+    setPreview(null);
+    const pipeline = pipelines.find((item) => item.path === entry.path);
+    if (!pipeline) return;
+
+    try {
+      const result = await api.getPipeline(pipeline.id);
+      setPreview(result.yaml);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const toggleHidden = async () => {
+    const next = !showHidden;
+    setShowHidden(next);
+    await loadDir(cwd, next);
+  };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", height: "100%" }}>
-      {/* Tree */}
+    <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", height: "100%" }}>
       <div style={{ borderRight: "1px solid var(--border)", overflowY: "auto", padding: "12px 8px" }}>
-        <div style={{ padding: "4px 8px 8px", display: "flex", alignItems: "center" }}>
+        <div style={{ padding: "4px 8px 8px", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: "var(--fg-dim)", textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 600, flex: 1 }}>
-            Workspace
+            Files
           </span>
-          <button type="button" style={{ ...btnGhost, padding: "2px 6px" }}>{Icons.plus}</button>
+          <button type="button" style={{ ...btnGhost, padding: "2px 6px" }} onClick={() => loadDir(cwd, showHidden)} title="Refresh">{Icons.refresh}</button>
+          <button type="button" style={{ ...btnGhost, padding: "2px 6px" }} onClick={toggleHidden} title="Toggle hidden files">
+            {showHidden ? Icons.eye : Icons.file}
+          </button>
         </div>
-        {tree.map((n, i) => (
+
+        <div className="mono" style={{ padding: "0 8px 10px", fontSize: 11, color: "var(--fg-muted)", overflowWrap: "anywhere" }}>
+          {cwd || "Loading..."}
+        </div>
+
+        {parent && parent !== cwd && (
           <button
-            key={i}
             type="button"
-            onClick={() => { if (!n.dir) setSel(n.name); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 6,
-              width: "100%", padding: "3px 6px",
-              background: sel === n.name ? "var(--bg-card)" : "transparent",
-              borderRadius: "var(--r-sm)", fontSize: 12.5, color: "var(--fg)",
-              border: "none", cursor: "pointer", textAlign: "left",
-              paddingLeft: 8 + n.depth * 14, marginBottom: 1,
-              fontFamily: "inherit",
-            }}
+            onClick={() => loadDir(parent, showHidden)}
+            style={entryStyle(false)}
           >
-            <span style={{ color: n.dir ? "var(--cyan-600)" : "var(--fg-dim)" }}>
-              {n.dir ? Icons.folder : Icons.file}
+            <span style={{ color: "var(--cyan-600)" }}>{Icons.folder}</span>
+            <span style={{ flex: 1 }}>..</span>
+          </button>
+        )}
+
+        {loading && <div style={{ padding: 12, color: "var(--fg-muted)", fontSize: 12.5 }}>Loading...</div>}
+        {error && <div style={{ padding: 12, color: "var(--err)", fontSize: 12.5 }}>{error}</div>}
+        {!loading && entries.length === 0 && !error && (
+          <div style={{ padding: 12, color: "var(--fg-muted)", fontSize: 12.5 }}>No entries.</div>
+        )}
+
+        {entries.map((entry) => (
+          <button
+            key={entry.path}
+            type="button"
+            onClick={() => selectEntry(entry)}
+            style={entryStyle(selected?.path === entry.path)}
+          >
+            <span style={{ color: entry.isDir ? "var(--cyan-600)" : "var(--fg-dim)" }}>
+              {entry.isDir ? Icons.folder : Icons.file}
             </span>
-            <span style={{ flex: 1 }} className={/\.(yaml|md|json|ts)$/.test(n.name) ? "mono" : undefined}>
-              {n.name}
+            <span style={{ flex: 1 }} className={entry.isYaml ? "mono" : undefined}>
+              {entry.name}
             </span>
-            {n.size && <span className="mono" style={{ fontSize: 10.5, color: "var(--fg-dim)" }}>{n.size}</span>}
+            {entry.isYaml && <span className="mono" style={{ fontSize: 10.5, color: "var(--fg-dim)" }}>yaml</span>}
           </button>
         ))}
       </div>
 
-      {/* Preview */}
       <div style={{ overflowY: "auto" }}>
         <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ color: "var(--fg-dim)" }}>{Icons.file}</span>
-          <span className="mono" style={{ fontSize: 13 }}>{sel}</span>
+          <span className="mono" style={{ fontSize: 13, overflowWrap: "anywhere" }}>{selected?.path ?? cwd}</span>
           <div style={{ flex: 1 }} />
-          <button type="button" style={btnGhost}>{Icons.edit}<span style={{ marginLeft: 6 }}>Edit</span></button>
+          {selectedPipeline && (
+            <button type="button" style={btnGhost} onClick={() => { window.location.hash = `#/pipelines/${selectedPipeline.id}`; }}>
+              {Icons.edit}<span style={{ marginLeft: 6 }}>Open pipeline</span>
+            </button>
+          )}
         </div>
         <div style={{ padding: "16px 20px" }}>
-          <pre style={{
-            maxWidth: 760, fontFamily: "var(--font-mono)", fontSize: 12.5,
-            lineHeight: 1.55, color: "var(--fg)", margin: 0, whiteSpace: "pre-wrap",
-          }}>
-            {previewText}
-          </pre>
+          {!selected ? (
+            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>Select a registered pipeline YAML file to preview it.</div>
+          ) : preview != null ? (
+            <pre style={{
+              maxWidth: 900, fontFamily: "var(--font-mono)", fontSize: 12.5,
+              lineHeight: 1.55, color: "var(--fg)", margin: 0, whiteSpace: "pre-wrap",
+            }}>
+              {preview}
+            </pre>
+          ) : (
+            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>
+              Preview is available for files registered as pipelines.
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+function entryStyle(active: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    width: "100%",
+    padding: "4px 6px",
+    background: active ? "var(--bg-card)" : "transparent",
+    borderRadius: "var(--r-sm)",
+    fontSize: 12.5,
+    color: "var(--fg)",
+    border: "none",
+    cursor: "pointer",
+    textAlign: "left",
+    marginBottom: 1,
+    fontFamily: "inherit",
+  };
 }

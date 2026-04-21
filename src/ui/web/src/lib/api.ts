@@ -68,6 +68,35 @@ export type FsEntry = {
   isYaml: boolean;
 };
 
+export type ContextEntry = {
+  key: string;
+  value: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string | null;
+};
+
+export type ContextStoreInfo = {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  dbPath: string;
+  exists: boolean;
+  entries: ContextEntry[];
+};
+
+export type UiSettings = {
+  ui?: {
+    autostart?: boolean;
+  };
+};
+
+export type UiSettingsUpdate = {
+  ui?: {
+    autostart?: boolean | null;
+  };
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -81,7 +110,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => req<{ ok: boolean; version: string; port: number }>("/api/health"),
+  health: () => req<{ ok: boolean; version: string; port: number; startedAt: string }>("/api/health"),
 
   // Pipelines
   listPipelines: () =>
@@ -153,6 +182,15 @@ export const api = {
   cancelRun: (id: string) =>
     req<{ ok: boolean }>(`/api/runs/${id}/cancel`, { method: "POST" }),
 
+  // Context
+  listContext: (options?: { projectId?: string; prefix?: string }) => {
+    const search = new URLSearchParams();
+    if (options?.projectId) search.set("projectId", options.projectId);
+    if (options?.prefix) search.set("prefix", options.prefix);
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return req<{ stores: ContextStoreInfo[] }>(`/api/context${suffix}`).then((r) => r.stores);
+  },
+
   // Providers
   listProviders: () =>
     req<{ providers: ProviderInfo[] }>("/api/providers").then((r) => r.providers),
@@ -163,6 +201,15 @@ export const api = {
     }),
   removeProvider: (id: string) =>
     req<{ ok: boolean }>(`/api/providers/${id}`, { method: "DELETE" }),
+
+  // Settings
+  getSettings: () =>
+    req<{ config: UiSettings; configDir: string }>("/api/settings"),
+  saveSettings: (config: UiSettingsUpdate) =>
+    req<{ ok: boolean; config: UiSettings; configDir: string }>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
 
   // Projects
   listProjects: () =>

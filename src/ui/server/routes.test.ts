@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createContextStore } from "../../context/store";
 import { readLock, removeLock } from "./lock";
 import { startUi, stopUi } from "./lifecycle";
 import { appendEvent, createRun } from "./runs-store";
@@ -56,6 +57,31 @@ describe("API", () => {
     expect(body.ok).toBe(true);
     expect(Array.isArray(body.providers)).toBe(true);
     expect(body.providers.length).toBeGreaterThan(0);
+  });
+
+  test("GET and PUT /api/settings use real UI config", async () => {
+    const put = await fetch(`${baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ui: { autostart: true } }),
+    });
+    expect(put.status).toBe(200);
+    const putBody = (await put.json()) as {
+      ok: boolean;
+      config: { ui?: { autostart?: boolean } };
+      configDir: string;
+    };
+    expect(putBody.ok).toBe(true);
+    expect(putBody.config.ui?.autostart).toBe(true);
+    expect(putBody.configDir).toBe(configDir);
+
+    const get = await fetch(`${baseUrl}/api/settings`);
+    const getBody = (await get.json()) as {
+      ok: boolean;
+      config: { ui?: { autostart?: boolean } };
+    };
+    expect(getBody.ok).toBe(true);
+    expect(getBody.config.ui?.autostart).toBe(true);
   });
 
   test("GET /api/fs/browse returns directory entries", async () => {
@@ -291,6 +317,37 @@ stages:
     };
     expect(body.ok).toBe(true);
     expect(body.entries.some((entry) => entry.name === ".openthk")).toBe(true);
+  });
+
+  test("GET /api/context returns project context store entries", async () => {
+    const projectDir = join(tmp, "context-project");
+    mkdirSync(projectDir, { recursive: true });
+    const projectRes = await fetch(`${baseUrl}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: projectDir, name: "context-project" }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = (await projectRes.json()) as {
+      project: { id: string };
+    };
+
+    const store = createContextStore({
+      dbPath: join(projectDir, ".openthk", "context.db"),
+    });
+    await store.set("plan.summary", "real context value", "test");
+    store.close();
+
+    const res = await fetch(
+      `${baseUrl}/api/context?projectId=${encodeURIComponent(projectBody.project.id)}`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      stores: Array<{ entries: Array<{ key: string; value: string }> }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.stores[0]?.entries.some((entry) => entry.key === "plan.summary" && entry.value === "real context value")).toBe(true);
   });
 
   test("GET /api/runs returns a list (possibly empty)", async () => {

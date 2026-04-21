@@ -11,14 +11,14 @@ type PaletteItem = {
 };
 
 const ITEMS: PaletteItem[] = [
-  { cat: "Actions", id: "run", label: "Run pipeline", kbd: "⌘R", icon: Icons.play },
+  { cat: "Actions", id: "run", label: "Run pipeline", kbd: "⇧⌘R", icon: Icons.play },
   { cat: "Actions", id: "new-pipe", label: "Create new pipeline", kbd: "⌘N", icon: Icons.plus },
-  { cat: "Actions", id: "ctx-clear", label: "Clear context store", icon: Icons.trash },
   { cat: "Go to", id: "dashboard", label: "Dashboard", icon: Icons.home },
   { cat: "Go to", id: "pipelines", label: "Pipelines", icon: Icons.flow },
   { cat: "Go to", id: "providers", label: "Providers", icon: Icons.plug },
   { cat: "Go to", id: "history", label: "History", icon: Icons.clock },
   { cat: "Go to", id: "context", label: "Context store", icon: Icons.db },
+  { cat: "Go to", id: "files", label: "Workspace files", icon: Icons.folder },
   { cat: "Go to", id: "skills", label: "Skills", icon: Icons.skill },
   { cat: "Go to", id: "logs", label: "Logs", icon: Icons.terminal },
   { cat: "Go to", id: "settings", label: "Settings", icon: Icons.settings },
@@ -64,8 +64,6 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       window.location.hash = `#/${item.id === "history" ? "runs" : item.id}`;
     } else if (item.id === "new-pipe") {
       window.location.hash = "#/pipelines";
-    } else if (item.id === "ctx-clear") {
-      window.location.hash = "#/context";
     } else if (item.id.startsWith("p")) {
       window.location.hash = "#/pipelines";
     }

@@ -1,4 +1,7 @@
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useToast } from "../components/ToastProvider";
+import { api, type UiSettings } from "../lib/api";
+import { formatRelative } from "../lib/run-events";
 
 function Section({ title, desc, children }: { title: string; desc: string; children: ReactNode }) {
   return (
@@ -12,84 +15,159 @@ function Section({ title, desc, children }: { title: string; desc: string; child
   );
 }
 
-function Field({ label, value, mono, hint }: { label: string; value: string; mono?: boolean; hint?: string }) {
+function ReadonlyField({ label, value, mono, hint }: { label: string; value: string; mono?: boolean; hint?: string }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 5, fontWeight: 500 }}>{label}</div>
-      <input
-        defaultValue={value}
+      <div
+        className={mono ? "mono" : undefined}
         style={{
           width: "100%", padding: "7px 10px", background: "var(--bg-card)",
           border: "1px solid var(--border)", borderRadius: "var(--r-md)",
-          fontSize: 13, color: "var(--fg)",
-          fontFamily: mono ? "var(--font-mono)" : "inherit", outline: "none",
+          fontSize: 13, color: "var(--fg)", overflowWrap: "anywhere",
         }}
-      />
+      >
+        {value}
+      </div>
       {hint && <div style={{ fontSize: 11.5, color: "var(--fg-dim)", marginTop: 4 }}>{hint}</div>}
     </div>
   );
 }
 
-function Toggle({ label, on }: { label: string; on: boolean }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", padding: "10px 0", borderTop: "1px solid var(--border)" }}>
-      <div style={{ flex: 1, fontSize: 13 }}>{label}</div>
-      <div style={{
-        width: 28, height: 16, borderRadius: 8,
-        background: on ? "var(--cyan-500)" : "var(--border-strong)",
-        position: "relative", cursor: "pointer",
-      }}>
-        <div style={{
-          position: "absolute", top: 2, left: on ? 14 : 2,
-          width: 12, height: 12, borderRadius: 6, background: "#fff",
-        }} />
-      </div>
-    </div>
-  );
-}
+type SettingsState = {
+  health: { version: string; port: number; startedAt: string } | null;
+  settings: UiSettings | null;
+  configDir: string | null;
+  providers: { total: number; configured: number };
+  projects: number;
+  pipelines: number;
+  skills: number;
+};
+
+const EMPTY: SettingsState = {
+  health: null,
+  settings: null,
+  configDir: null,
+  providers: { total: 0, configured: 0 },
+  projects: 0,
+  pipelines: 0,
+  skills: 0,
+};
 
 export function Settings() {
+  const { pushToast } = useToast();
+  const [state, setState] = useState<SettingsState>(EMPTY);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [health, settings, providers, projects, pipelines, skills] = await Promise.all([
+        api.health(),
+        api.getSettings(),
+        api.listProviders(),
+        api.listProjects(),
+        api.listPipelines(),
+        api.listSkills({ includeGlobal: true }),
+      ]);
+      setState({
+        health,
+        settings: settings.config,
+        configDir: settings.configDir,
+        providers: {
+          total: providers.length,
+          configured: providers.filter((provider) => provider.configured).length,
+        },
+        projects: projects.length,
+        pipelines: pipelines.length,
+        skills: skills.length,
+      });
+      setError(null);
+    } catch (e) {
+      const message = (e as Error).message;
+      setError(message);
+      pushToast({ kind: "error", title: "Could not load settings", description: message });
+    }
+  }, [pushToast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const autostart =
+    state.settings?.ui?.autostart === true
+      ? "true"
+      : state.settings?.ui?.autostart === false
+        ? "false"
+        : "ask";
+
+  const saveAutostart = async (value: string) => {
+    setSaving(true);
+    try {
+      const autostartValue = value === "ask" ? null : value === "true";
+      const result = await api.saveSettings({ ui: { autostart: autostartValue } });
+      setState((current) => ({
+        ...current,
+        settings: result.config,
+        configDir: result.configDir,
+      }));
+      pushToast({ kind: "success", title: "Settings saved" });
+    } catch (e) {
+      pushToast({ kind: "error", title: "Could not save settings", description: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div style={{ padding: "24px 28px 60px", maxWidth: 960, margin: "0 auto" }}>
       <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.3, margin: "0 0 4px" }}>Settings</h1>
-      <p style={{ fontSize: 13, color: "var(--fg-muted)", margin: 0 }}>Project + global configuration</p>
+      <p style={{ fontSize: 13, color: "var(--fg-muted)", margin: 0 }}>Configuration exposed by the UI API</p>
 
-      <Section title="Project" desc="Stored at .openthk/">
-        <Field label="Project name" value="feature-development" />
-        <Field label="Default pipeline" value="feature-development" mono />
-        <Field label="Context backend" value="sqlite" mono hint="Switch to postgres for shared cross-machine context" />
-      </Section>
+      {error && (
+        <div style={{ marginTop: 16, background: "var(--bg-card)", border: "1px solid var(--err)", borderRadius: "var(--r-md)", padding: 12, color: "var(--err)", fontSize: 13 }}>
+          {error}
+        </div>
+      )}
 
-      <Section title="Limits" desc="Enforced per run. Applied after pipeline policies.">
+      <Section title="Runtime" desc="Current UI server process.">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Cost cap" value="$50 / run" mono />
-          <Field label="Rate limit" value="100 / hour" mono />
-          <Field label="Timeout" value="120s" mono />
-          <Field label="Max iters" value="50" mono />
+          <ReadonlyField label="Version" value={state.health?.version ?? "Unavailable"} mono />
+          <ReadonlyField label="Port" value={state.health ? String(state.health.port) : "Unavailable"} mono />
+          <ReadonlyField label="Started" value={state.health ? formatRelative(state.health.startedAt) : "Unavailable"} />
+          <ReadonlyField label="Config directory" value={state.configDir ?? "Unavailable"} mono />
         </div>
       </Section>
 
-      <Section title="Appearance" desc="UI preferences, stored locally.">
-        <Toggle label="Reduced motion" on={false} />
-        <Toggle label="Compact density" on={false} />
-        <Toggle label="Show monospace in tables" on={true} />
-        <Toggle label="Auto-open live logs on run" on={true} />
+      <Section title="Workspace index" desc="Counts returned by projects, pipelines, skills, and providers endpoints.">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <ReadonlyField label="Projects" value={String(state.projects)} mono />
+          <ReadonlyField label="Pipelines" value={String(state.pipelines)} mono />
+          <ReadonlyField label="Skills" value={String(state.skills)} mono />
+          <ReadonlyField label="Providers configured" value={`${state.providers.configured} / ${state.providers.total}`} mono />
+        </div>
       </Section>
 
-      <Section title="Danger zone" desc="">
-        <div style={{ padding: 14, background: "var(--bg-card)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "var(--r-md)" }}>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>Clear context store</div>
-          <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 2, marginBottom: 12 }}>
-            Wipes <span className="mono">.openthk/context.db</span>. Cannot be undone.
+      <Section title="UI config" desc="Stored in the OpenThinking config file.">
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 5, fontWeight: 500 }}>Autostart UI</div>
+          <select
+            value={autostart}
+            disabled={saving}
+            onChange={(event) => saveAutostart(event.target.value)}
+            style={{
+              width: "100%", padding: "7px 10px", background: "var(--bg-card)",
+              border: "1px solid var(--border)", borderRadius: "var(--r-md)",
+              fontSize: 13, color: "var(--fg)", fontFamily: "inherit", outline: "none",
+            }}
+          >
+            <option value="ask">Ask on next run</option>
+            <option value="true">Start automatically</option>
+            <option value="false">Do not start automatically</option>
+          </select>
+          <div style={{ fontSize: 11.5, color: "var(--fg-dim)", marginTop: 4 }}>
+            This is the existing <span className="mono">ui.autostart</span> setting.
           </div>
-          <button type="button" style={{
-            padding: "6px 12px", background: "transparent",
-            border: "1px solid var(--err)", color: "var(--err)",
-            borderRadius: "var(--r-sm)", fontSize: 12.5, cursor: "pointer",
-            fontFamily: "inherit",
-          }}>
-            Clear context store
-          </button>
         </div>
       </Section>
     </div>

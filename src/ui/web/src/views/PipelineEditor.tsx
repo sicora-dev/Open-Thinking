@@ -19,7 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { EmptyState } from "../components/EmptyState";
 import { useToast } from "../components/ToastProvider";
-import { api, type PipelineEntry, type ProjectEntry, type ProviderInfo } from "../lib/api";
+import { api, type PipelineEntry, type ProjectEntry, type ProviderInfo, type SkillEntry } from "../lib/api";
 import { subscribeRunStream, type RunStreamState } from "../lib/run-stream";
 
 type PipelineMode = "sequential" | "orchestrated";
@@ -111,7 +111,7 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const [draft, setDraft] = useState<DraftMeta | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
-  const [skills, setSkills] = useState<Array<{ id: string; path: string; name: string }>>([]);
+  const [skills, setSkills] = useState<SkillEntry[]>([]);
   const [nodes, setNodes, onNodesChange] = useNodesState<PipelineNode>([]);
   const [dependencyEdges, setDependencyEdges, onDependencyEdgesChange] = useEdgesState<PipelineEdge>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -133,6 +133,7 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const [validation, setValidation] = useState<ValidationState>(INITIAL_VALIDATION);
   const [saving, setSaving] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [createSkillOpen, setCreateSkillOpen] = useState(false);
   const [saveAsTarget, setSaveAsTarget] = useState("global");
   const [saveAsName, setSaveAsName] = useState("");
   const [runInput, setRunInput] = useState("");
@@ -180,7 +181,7 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
         setSelectedNodeId(null);
         setProviders(providerList);
         setProjects(projectList);
-        setSkills(skillList);
+        setSkills(skillList.sort(compareSkillsForEditor));
         setSaveAsTarget(
           pipeline.entry.projectId &&
             projectList.some((project) => project.id === pipeline.entry.projectId)
@@ -212,6 +213,10 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
+  );
+  const selectedProject = useMemo(
+    () => (entry?.projectId ? projects.find((project) => project.id === entry.projectId) ?? null : null),
+    [entry?.projectId, projects],
   );
   const stageNodes = useMemo(
     () => nodes.filter((node) => isStageKind(node.data.kind)),
@@ -374,6 +379,7 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
       id: `node-${crypto.randomUUID()}`,
       kind,
       stageName: nextName,
+      skill: skills[0]?.id,
       position:
         position ??
         {
@@ -411,6 +417,26 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
       currentEdges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
     );
     setSelectedNodeId(null);
+  };
+
+  const handleSkillCreated = (skill: SkillEntry) => {
+    setSkills((currentSkills) => {
+      const withoutDuplicate = currentSkills.filter(
+        (currentSkill) =>
+          !(
+            currentSkill.id === skill.id &&
+            currentSkill.scope === skill.scope &&
+            currentSkill.projectId === skill.projectId
+          ),
+      );
+      return [...withoutDuplicate, skill].sort(compareSkillsForEditor);
+    });
+    updateSelectedNode((node) => ({
+      ...node,
+      data: { ...node.data, skill: skill.id },
+    }));
+    setCreateSkillOpen(false);
+    pushToast({ kind: "success", title: "Skill created", description: skill.id });
   };
 
   const savePipeline = async () => {
@@ -970,22 +996,28 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
               </Field>
 
               <Field label="Skill">
-                <input
-                  className="input"
-                  list="skills-list"
-                  value={selectedNode.data.skill ?? ""}
-                  onChange={(event) =>
-                    updateSelectedNode((node) => ({
-                      ...node,
-                      data: { ...node.data, skill: event.target.value },
-                    }))
-                  }
-                />
-                <datalist id="skills-list">
-                  {skills.map((skill) => (
-                    <option key={skill.id} value={skill.id} />
-                  ))}
-                </datalist>
+                <div className="flex gap-2">
+                  <select
+                    className="input flex-1"
+                    value={selectedNode.data.skill ?? ""}
+                    onChange={(event) =>
+                      updateSelectedNode((node) => ({
+                        ...node,
+                        data: { ...node.data, skill: event.target.value },
+                      }))
+                    }
+                  >
+                    <SkillOptions skills={skills} currentValue={selectedNode.data.skill ?? ""} />
+                  </select>
+                  <button type="button" className="btn shrink-0" onClick={() => setCreateSkillOpen(true)}>
+                    New
+                  </button>
+                </div>
+                <div className="mt-1 text-[11px] text-ink-400">
+                  {selectedProject
+                    ? `Showing global skills and project skills for ${selectedProject.name}.`
+                    : "Showing global skills."}
+                </div>
               </Field>
 
               <Field label="System message">
@@ -1160,6 +1192,14 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
         </div>
       </div>
 
+      {createSkillOpen && (
+        <CreateEditorSkillModal
+          project={selectedProject}
+          onClose={() => setCreateSkillOpen(false)}
+          onCreated={handleSkillCreated}
+        />
+      )}
+
       {saveAsOpen && (
         <div className="fixed inset-0 z-50 overlay-scrim flex items-center justify-center p-6">
           <div className="panel w-full max-w-lg">
@@ -1243,6 +1283,153 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="label block mb-1">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function SkillOptions({
+  skills,
+  currentValue,
+}: {
+  skills: SkillEntry[];
+  currentValue: string;
+}) {
+  const projectSkills = skills.filter((skill) => skill.scope === "project");
+  const globalSkills = skills.filter((skill) => skill.scope === "global");
+  const currentIsKnown = currentValue
+    ? skills.some((skill) => skill.id === currentValue)
+    : true;
+
+  return (
+    <>
+      {!currentValue && (
+        <option value="" disabled>
+          {skills.length === 0 ? "No skills available" : "Select a skill"}
+        </option>
+      )}
+      {currentValue && !currentIsKnown && (
+        <option value={currentValue}>{currentValue} (from YAML)</option>
+      )}
+      {projectSkills.length > 0 && (
+        <optgroup label="Project skills">
+          {projectSkills.map((skill) => (
+            <option key={skillOptionKey(skill)} value={skill.id}>
+              {skill.id}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {globalSkills.length > 0 && (
+        <optgroup label="Global skills">
+          {globalSkills.map((skill) => (
+            <option key={skillOptionKey(skill)} value={skill.id}>
+              {skill.id}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </>
+  );
+}
+
+function CreateEditorSkillModal({
+  project,
+  onClose,
+  onCreated,
+}: {
+  project: ProjectEntry | null;
+  onClose: () => void;
+  onCreated: (skill: SkillEntry) => void;
+}) {
+  const { pushToast } = useToast();
+  const [scope, setScope] = useState<"global" | "project">(project ? "project" : "global");
+  const [namespace, setNamespace] = useState("custom");
+  const [name, setName] = useState("new-skill");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const create = async () => {
+    const cleanNamespace = namespace.trim();
+    const cleanName = name.trim();
+    if (!cleanNamespace || !cleanName) {
+      setError("Namespace and name are required.");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.createSkill({
+        namespace: cleanNamespace,
+        name: cleanName,
+        projectId: scope === "project" ? project?.id : undefined,
+      });
+      onCreated(result.skill);
+    } catch (e) {
+      const message = (e as Error).message;
+      setError(message);
+      pushToast({ kind: "error", title: "Could not create skill", description: message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 overlay-scrim flex items-center justify-center p-6">
+      <div className="panel w-full max-w-md">
+        <div className="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
+          <div className="text-sm font-medium">New skill</div>
+          <button type="button" className="text-ink-400 hover:text-ink-100 text-sm" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="p-4 space-y-3">
+          <Field label="Destination">
+            <select
+              className="input"
+              value={scope}
+              onChange={(event) => setScope(event.target.value as "global" | "project")}
+            >
+              {project && (
+                <option value="project">Project · {project.name}</option>
+              )}
+              <option value="global">Global</option>
+            </select>
+          </Field>
+          <Field label="Namespace">
+            <input
+              className="input font-mono"
+              value={namespace}
+              onChange={(event) => setNamespace(event.target.value)}
+            />
+          </Field>
+          <Field label="Name">
+            <input
+              className="input font-mono"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  create();
+                }
+              }}
+            />
+          </Field>
+          <div className="text-[11px] text-ink-400">
+            The new skill will be added to the dropdown and selected for the current node.
+          </div>
+          {error && <div className="text-red-400 text-xs">{error}</div>}
+        </div>
+        <div className="px-4 py-3 border-t border-ink-700 flex justify-end gap-2">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn-accent" disabled={busy} onClick={create}>
+            {busy ? "Creating..." : "Create and select"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1696,11 +1883,13 @@ function createStageNode({
   id,
   kind,
   stageName,
+  skill,
   position,
 }: {
   id: string;
   kind: "stage" | "orchestrator";
   stageName: string;
+  skill?: string;
   position: { x: number; y: number };
 }): PipelineNode {
   return {
@@ -1713,7 +1902,7 @@ function createStageNode({
       stageName,
       provider: "openai",
       model: "gpt-4o",
-      skill: "core/echo@1.0",
+      skill: skill ?? "core/echo@1.0",
       systemMessage: "",
       allowedTools: [],
       contextRead: ["input.*"],
@@ -1726,6 +1915,15 @@ function createStageNode({
       status: "idle",
     },
   };
+}
+
+function skillOptionKey(skill: SkillEntry): string {
+  return `${skill.scope}:${skill.projectId ?? "global"}:${skill.id}`;
+}
+
+function compareSkillsForEditor(a: SkillEntry, b: SkillEntry): number {
+  if (a.scope !== b.scope) return a.scope === "project" ? -1 : 1;
+  return a.id.localeCompare(b.id);
 }
 
 function extractStageExtras(stageDocument: RawStageDocument): Record<string, unknown> {

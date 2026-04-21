@@ -65,10 +65,27 @@ type LayoutProps = {
 
 export function Layout({ active, children, onOpenPalette }: LayoutProps) {
   const [version, setVersion] = useState<string | null>(null);
+  const [workspaceLabel, setWorkspaceLabel] = useState("Workspace");
+  const [serverStatus, setServerStatus] = useState<"loading" | "online" | "offline">("loading");
   const [theme, setTheme] = useState<UiTheme>(resolveInitialTheme);
 
   useEffect(() => {
-    api.health().then((h) => setVersion(h.version)).catch(() => {});
+    api
+      .health()
+      .then((h) => {
+        setVersion(h.version);
+        setServerStatus(h.ok ? "online" : "offline");
+      })
+      .catch(() => setServerStatus("offline"));
+
+    api
+      .listProjects()
+      .then((projects) => {
+        if (projects.length === 1) setWorkspaceLabel(projects[0].name);
+        else if (projects.length > 1) setWorkspaceLabel(`${projects.length} projects`);
+        else setWorkspaceLabel("Global workspace");
+      })
+      .catch(() => setWorkspaceLabel("Workspace"));
   }, []);
 
   useEffect(() => {
@@ -78,11 +95,18 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
 
   const isActive = (id: string) =>
     active === id ||
-    (id === "history" && (active === "runs" || active === "run")) ||
+    (id === "history" && active === "runs") ||
     (id === "pipelines" && active === "pipelineEditor");
 
   const activeLabel = LABELS[active] ?? "Dashboard";
-  const project = "feature-development";
+  const statusLabel =
+    serverStatus === "online" ? "Online" : serverStatus === "offline" ? "Offline" : "Checking";
+  const statusColor =
+    serverStatus === "online"
+      ? "var(--ok)"
+      : serverStatus === "offline"
+        ? "var(--err)"
+        : "var(--warn)";
 
   return (
     <div
@@ -131,6 +155,9 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
           {/* Project selector */}
           <button
             type="button"
+            onClick={() => {
+              window.location.hash = "#/projects";
+            }}
             style={{
               width: "100%",
               display: "flex",
@@ -165,9 +192,9 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
               }}
             >
               <div style={{ fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.2 }}>
-                Project
+                Workspace
               </div>
-              <div style={{ fontWeight: 500, lineHeight: 1.3 }}>{project}</div>
+              <div style={{ fontWeight: 500, lineHeight: 1.3 }}>{workspaceLabel}</div>
             </div>
             <span style={{ color: "var(--fg-dim)" }}>{Icons.chevDown}</span>
           </button>
@@ -411,7 +438,7 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
               color: "var(--fg-muted)",
             }}
           >
-            <span>{project}</span>
+            <span>{workspaceLabel}</span>
             <span style={{ color: "var(--fg-dim)" }}>{Icons.chevRight}</span>
             <span style={{ color: "var(--fg)", fontWeight: 500 }}>
               {activeLabel}
@@ -434,10 +461,10 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
                   width: 6,
                   height: 6,
                   borderRadius: 3,
-                  background: "var(--ok)",
+                  background: statusColor,
                 }}
               />
-              <span>Online</span>
+              <span>{statusLabel}</span>
             </div>
             <div
               style={{
@@ -446,24 +473,6 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
                 background: "var(--border)",
               }}
             />
-            <button
-              type="button"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 10px",
-                background: "transparent",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--r-sm)",
-                cursor: "pointer",
-                fontSize: 12,
-                color: "var(--fg)",
-                fontFamily: "inherit",
-              }}
-            >
-              {Icons.bell}
-            </button>
             <button
               type="button"
               onClick={() => {

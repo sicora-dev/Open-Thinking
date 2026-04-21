@@ -20,9 +20,12 @@
  *   GET    /api/runs/:id                        — single run + summary
  *   GET    /api/runs/:id/stream                 — SSE event stream
  *   POST   /api/runs/:id/cancel                 — abort
+ *   GET    /api/context                         — inspect project context stores
  *   GET    /api/providers                       — catalog + key status
  *   POST   /api/providers                       — add/update API key
  *   DELETE /api/providers/:id                   — remove key
+ *   GET    /api/settings                        — read UI config
+ *   PUT    /api/settings                        — update UI config
  *   GET    /api/skills                          — list global or project skills
  *   POST   /api/skills                          — create a global or project skill
  *   GET    /api/skills/content                  — load a skill prompt + manifest
@@ -45,11 +48,14 @@ import {
   PROVIDER_CATALOG,
   addProvider,
   listProviders,
+  loadOpenthkConfig,
   removeProvider as removeGlobalProvider,
+  saveOpenthkConfig,
 } from "../../config";
 import { getOpenthkConfigDir } from "../../config/paths";
+import { createContextStore } from "../../context/store";
 import { parsePipeline, parsePipelineFromString } from "../../pipeline/parser";
-import { initProjectWorkspace, pipelineNameFromFilename } from "../../workspace";
+import { getProjectDir, initProjectWorkspace, pipelineNameFromFilename } from "../../workspace";
 import {
   type PipelineIndexEntry,
   getIndexedPipeline,
@@ -638,6 +644,57 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     return json({ ok: ok2 });
   }
 
+  // ── Context stores ─────────────────────────────────────
+  if (method === "GET" && pathname === "/api/context") {
+    const projectId = url.searchParams.get("projectId");
+    const prefix = url.searchParams.get("prefix") ?? undefined;
+    const projects = projectId
+      ? [getIndexedProject(projectId)].filter((project): project is ProjectIndexEntry => project != null)
+      : listIndexedProjects();
+
+    if (projectId && projects.length === 0) return notFound("Project not registered");
+
+    const stores = [];
+    for (const project of projects) {
+      const dbPath = join(getProjectDir(project.path), "context.db");
+      if (!existsSync(dbPath)) {
+        stores.push({
+          projectId: project.id,
+          projectName: project.name,
+          projectPath: project.path,
+          dbPath,
+          exists: false,
+          entries: [],
+        });
+        continue;
+      }
+
+      const store = createContextStore({ dbPath });
+      try {
+        const result = await store.list(prefix);
+        if (!result.ok) return serverError(result.error.message);
+        stores.push({
+          projectId: project.id,
+          projectName: project.name,
+          projectPath: project.path,
+          dbPath,
+          exists: true,
+          entries: result.value.map((entry) => ({
+            key: entry.key,
+            value: entry.value,
+            createdBy: entry.createdBy,
+            createdAt: entry.createdAt.toISOString(),
+            expiresAt: entry.expiresAt?.toISOString() ?? null,
+          })),
+        });
+      } finally {
+        store.close();
+      }
+    }
+
+    return json({ ok: true, stores });
+  }
+
   // ── Providers ──────────────────────────────────────────
   if (method === "GET" && pathname === "/api/providers") {
     const configured = new Map(listProviders().map((p) => [p.id, p]));
@@ -679,6 +736,36 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     const result = removeGlobalProvider(providerParams.id ?? "");
     if (!result.ok) return serverError(result.error.message);
     return json({ ok: true, removed: result.value });
+  }
+
+  // ── Settings ───────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/settings") {
+    return json({
+      ok: true,
+      config: loadOpenthkConfig(),
+      configDir: getOpenthkConfigDir(),
+    });
+  }
+
+  if (method === "PUT" && pathname === "/api/settings") {
+    const body = await readJsonBody<{ ui?: { autostart?: boolean | null } }>(req);
+    if (!body) return badRequest("JSON body required");
+    const cfg = loadOpenthkConfig();
+
+    if (body.ui && Object.prototype.hasOwnProperty.call(body.ui, "autostart")) {
+      const autostart = body.ui.autostart;
+      if (autostart != null && typeof autostart !== "boolean") {
+        return badRequest("`ui.autostart` must be boolean or null");
+      }
+      const nextUi = { ...(cfg.ui ?? {}) };
+      if (autostart == null) delete nextUi.autostart;
+      else nextUi.autostart = autostart;
+      cfg.ui = nextUi;
+    }
+
+    const result = saveOpenthkConfig(cfg);
+    if (!result.ok) return serverError(result.error.message);
+    return json({ ok: true, config: cfg, configDir: getOpenthkConfigDir() });
   }
 
   // ── Skills ─────────────────────────────────────────────
