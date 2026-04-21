@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { CommandPalette } from "./components/CommandPalette";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/ToastProvider";
 import { Pipelines } from "./views/Pipelines";
@@ -133,6 +134,7 @@ export default function App() {
         {route.name === "logs" && <PlaceholderView title="Logs" />}
         {route.name === "settings" && <PlaceholderView title="Settings" />}
       </Layout>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </ToastProvider>
   );
 }
