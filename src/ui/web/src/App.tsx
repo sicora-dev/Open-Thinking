@@ -3,6 +3,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/ToastProvider";
 import { Dashboard } from "./views/Dashboard";
+import { RunPipeline } from "./views/RunPipeline";
 import { Pipelines } from "./views/Pipelines";
 import { PipelineEditor } from "./views/PipelineEditor";
 import { Projects } from "./views/Projects";
@@ -119,7 +120,7 @@ export default function App() {
     <ToastProvider>
       <Layout active={active} onOpenPalette={handleOpenPalette}>
         {route.name === "dashboard" && <Dashboard />}
-        {route.name === "run" && <PlaceholderView title="Run Pipeline" />}
+        {route.name === "run" && <RunPipeline />}
         {route.name === "pipelines" && <Pipelines />}
         {route.name === "pipelineEditor" && (
           <PipelineEditor pipelineId={route.id} />
