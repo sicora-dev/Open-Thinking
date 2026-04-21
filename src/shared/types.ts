@@ -60,6 +60,8 @@ export type StageDefinition = {
   context: StageContextPermissions;
   depends_on?: string[];
   max_tokens?: number;
+  /** Used by newer models (e.g. o1/o3-series) instead of max_tokens */
+  max_completion_tokens?: number;
   temperature?: number;
   /** Max agent loop iterations (tool call rounds). Default: 50. */
   max_iterations?: number;
@@ -125,6 +127,7 @@ export type ChatRequest = {
   model: string;
   messages: Message[];
   maxTokens?: number;
+  maxCompletionTokens?: number;
   temperature?: number;
   systemPrompt?: string;
   tools?: ToolDefinition[];

@@ -49,6 +49,7 @@ function buildRequestBody(request: ChatRequest): Record<string, unknown> {
     messages,
   };
   if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
+  if (request.maxCompletionTokens !== undefined) body.max_completion_tokens = request.maxCompletionTokens;
   if (request.temperature !== undefined) body.temperature = request.temperature;
   if (request.tools?.length) {
     body.tools = request.tools.map((t) => ({

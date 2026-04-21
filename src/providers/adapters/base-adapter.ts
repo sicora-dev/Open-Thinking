@@ -90,18 +90,23 @@ export function createAdapter(config: BaseAdapterConfig): LLMProvider {
   // ─── chat (non-streaming) ─────────────────────────────────
 
   async function chat(request: ChatRequest): Promise<Result<ChatResponse>> {
-    const url = `${baseUrl}${protocol.chatPath}`;
-    const body = protocol.buildRequestBody({ ...request, stream: false });
-    const bodyJson = JSON.stringify(body);
+    const url = protocol.buildChatUrl ? protocol.buildChatUrl(baseUrl, request) : `${baseUrl}${protocol.chatPath}`;
     const signal = buildSignal(request);
 
-    // Estimate input tokens from payload size (~4 chars per token)
-    const estimatedTokens = Math.ceil(bodyJson.length / 4);
-
-    log.debug("chat request", { url, model: request.model, estimatedTokens });
+    let useMaxCompletionTokensFallback = false;
 
     const result = await withRetry<ChatResponse>(
       async (): Promise<AttemptResult<ChatResponse>> => {
+        const body = protocol.buildRequestBody({ ...request, stream: false });
+        if (useMaxCompletionTokensFallback && body.max_tokens !== undefined) {
+          body.max_completion_tokens = body.max_tokens;
+          delete body.max_tokens;
+        }
+        const bodyJson = JSON.stringify(body);
+        const estimatedTokens = Math.ceil(bodyJson.length / 4);
+
+        log.debug("chat request", { url, model: request.model, estimatedTokens });
+
         // Wait for RPM and TPM limiters before each attempt
         await rateLimiter.acquire(signal);
         await tpmLimiter.acquire(estimatedTokens, signal);
@@ -116,6 +121,17 @@ export function createAdapter(config: BaseAdapterConfig): LLMProvider {
 
           if (!response.ok) {
             const errorBody = await response.text().catch(() => "");
+            
+            // Auto-fallback mechanism for models that deprecate max_tokens
+            if (response.status === 400 && errorBody.includes("Use 'max_completion_tokens' instead")) {
+              useMaxCompletionTokensFallback = true;
+              return {
+                ok: false,
+                retriable: true, // Force a retry with the new flag
+                error: makeProviderError("Retrying with max_completion_tokens...", response.status),
+              };
+            }
+
             const retriable = isRetriableStatus(response.status);
             // Calibrate TPM limit from error response headers too
             tpmLimiter.updateFromHeaders(response.headers);
@@ -175,17 +191,24 @@ export function createAdapter(config: BaseAdapterConfig): LLMProvider {
   // ─── stream (SSE) ─────────────────────────────────────────
 
   async function* stream(request: ChatRequest): AsyncGenerator<StreamChunk> {
-    const url = `${baseUrl}${protocol.chatPath}`;
-    const body = protocol.buildRequestBody({ ...request, stream: true });
-    const bodyJson = JSON.stringify(body);
+    const url = protocol.buildChatUrl ? protocol.buildChatUrl(baseUrl, request) : `${baseUrl}${protocol.chatPath}`;
     const signal = buildSignal(request);
-    const estimatedTokens = Math.ceil(bodyJson.length / 4);
 
-    log.debug("stream request", { url, model: request.model, estimatedTokens });
+    let useMaxCompletionTokensFallback = false;
 
     // Retry only the initial connection, not mid-stream failures
     const connResult = await withRetry<Response>(
       async (): Promise<AttemptResult<Response>> => {
+        const body = protocol.buildRequestBody({ ...request, stream: true });
+        if (useMaxCompletionTokensFallback && body.max_tokens !== undefined) {
+          body.max_completion_tokens = body.max_tokens;
+          delete body.max_tokens;
+        }
+        const bodyJson = JSON.stringify(body);
+        const estimatedTokens = Math.ceil(bodyJson.length / 4);
+
+        log.debug("stream request", { url, model: request.model, estimatedTokens });
+
         await rateLimiter.acquire(signal);
         await tpmLimiter.acquire(estimatedTokens, signal);
 
@@ -199,6 +222,16 @@ export function createAdapter(config: BaseAdapterConfig): LLMProvider {
 
           if (!response.ok) {
             const errorBody = await response.text().catch(() => "");
+
+            if (response.status === 400 && errorBody.includes("Use 'max_completion_tokens' instead")) {
+              useMaxCompletionTokensFallback = true;
+              return {
+                ok: false,
+                retriable: true,
+                error: makeProviderError("Retrying with max_completion_tokens...", response.status),
+              };
+            }
+
             return {
               ok: false,
               retriable: isRetriableStatus(response.status),

@@ -31,6 +31,9 @@ export type ProviderProtocol = {
   /** Endpoint path appended to baseUrl for chat requests (e.g., "/chat/completions", "/messages"). */
   chatPath: string;
 
+  /** Optional function to dynamically construct the full chat endpoint URL based on the request. */
+  buildChatUrl?: (baseUrl: string, request: ChatRequest) => string;
+
   /** Build HTTP headers. Called once at adapter creation time. */
   buildHeaders: (apiKey?: string, extraHeaders?: Record<string, string>) => Record<string, string>;
 
