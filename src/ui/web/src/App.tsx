@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/ToastProvider";
+import { Dashboard } from "./views/Dashboard";
 import { Pipelines } from "./views/Pipelines";
 import { PipelineEditor } from "./views/PipelineEditor";
 import { Projects } from "./views/Projects";
@@ -117,7 +118,7 @@ export default function App() {
   return (
     <ToastProvider>
       <Layout active={active} onOpenPalette={handleOpenPalette}>
-        {route.name === "dashboard" && <PlaceholderView title="Dashboard" />}
+        {route.name === "dashboard" && <Dashboard />}
         {route.name === "run" && <PlaceholderView title="Run Pipeline" />}
         {route.name === "pipelines" && <Pipelines />}
         {route.name === "pipelineEditor" && (
