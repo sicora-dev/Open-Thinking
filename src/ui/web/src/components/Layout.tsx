@@ -2,212 +2,497 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import {
-	THEME_STORAGE_KEY,
-	applyTheme,
-	resolveInitialTheme,
-	type UiTheme,
+  THEME_STORAGE_KEY,
+  applyTheme,
+  resolveInitialTheme,
+  type UiTheme,
 } from "../lib/theme";
+import { Icons } from "./Icons";
+import { Logomark } from "./Logomark";
 
-type NavItem = { id: string; label: string; href: string; icon: string };
-type SectionMeta = { title: string; subtitle: string };
-
-const NAV: NavItem[] = [
-	{ id: "pipelines", label: "Pipelines", href: "#/pipelines", icon: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" },
-	{ id: "projects", label: "Projects", href: "#/projects", icon: "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z" },
-	{ id: "runs", label: "Runs", href: "#/runs", icon: "M13 2.05v3.03c3.39.49 6 3.39 6 6.92 0 .9-.18 1.75-.5 2.54l2.63 1.53c.56-1.24.87-2.6.87-4.07 0-5.29-3.87-9.18-9-9.65zM12 19c-3.87 0-7-3.13-7-7 0-3.53 2.61-6.43 6-6.92V2.05c-5.13.47-9 4.36-9 9.65 0 5.29 3.87 9.18 9 9.65v-3.03c-3.39-.49-6-3.39-6-6.92 0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7v3.03c5.13-.47 9-4.36 9-9.65 0-5.29-3.87-9.18-9-9.65z" },
-	{ id: "providers", label: "Providers", href: "#/providers", icon: "M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" },
-	{ id: "skills", label: "Skills", href: "#/skills", icon: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84a.484.484 0 0 0-.48.41l-.36 2.54c-.59.24-1.12.56-1.62.94l-2.39-.96a.488.488 0 0 0-.59.22L3.16 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.63-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .43-.17.48-.41l.36-2.54c.59-.24 1.12-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" },
-];
-
-const SECTION_META: Record<string, SectionMeta> = {
-	pipelines: {
-		title: "Pipelines",
-		subtitle: "Design and manage your AI workflows",
-	},
-	projects: {
-		title: "Projects",
-		subtitle: "Organize your work into projects",
-	},
-	runs: {
-		title: "Runs",
-		subtitle: "Monitor executions and view history",
-	},
-	run: {
-		title: "Live Run",
-		subtitle: "Real-time execution details",
-	},
-	providers: {
-		title: "Providers",
-		subtitle: "Configure LLM providers and API keys",
-	},
-	skills: {
-		title: "Skills",
-		subtitle: "Manage reusable AI skills",
-	},
+type NavGroup = {
+  group: string;
+  items: {
+    id: string;
+    label: string;
+    href: string;
+    icon: ReactNode;
+    count?: number;
+    kbd?: string;
+  }[];
 };
 
-const SIDEBAR_WIDTH = "w-56";
-const SIDEBAR_COLLAPSED_WIDTH = "w-14";
+const NAV_GROUPS: NavGroup[] = [
+  {
+    group: "Workspace",
+    items: [
+      { id: "dashboard", label: "Dashboard", href: "#/dashboard", icon: Icons.home },
+      { id: "run", label: "Run pipeline", href: "#/run", icon: Icons.play, kbd: "R" },
+      { id: "pipelines", label: "Pipelines", href: "#/pipelines", icon: Icons.flow },
+      { id: "history", label: "History", href: "#/runs", icon: Icons.clock },
+    ],
+  },
+  {
+    group: "Resources",
+    items: [
+      { id: "providers", label: "Providers", href: "#/providers", icon: Icons.plug },
+      { id: "skills", label: "Skills", href: "#/skills", icon: Icons.skill },
+      { id: "context", label: "Context store", href: "#/context", icon: Icons.db },
+      { id: "files", label: "Workspace files", href: "#/files", icon: Icons.folder },
+    ],
+  },
+  {
+    group: "System",
+    items: [
+      { id: "logs", label: "Logs", href: "#/logs", icon: Icons.terminal },
+      { id: "settings", label: "Settings", href: "#/settings", icon: Icons.settings },
+    ],
+  },
+];
 
-export function Layout({ active, children }: { active: string; children: ReactNode }) {
-	const [version, setVersion] = useState<string | null>(null);
-	const [theme, setTheme] = useState<UiTheme>(resolveInitialTheme);
-	const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-		// Persist sidebar state
-		if (typeof window !== "undefined") {
-			return localStorage.getItem("sidebar-collapsed") === "true";
-		}
-		return false;
-	});
-	const section = SECTION_META[active] ?? SECTION_META.pipelines;
+const LABELS: Record<string, string> = {};
+for (const g of NAV_GROUPS) {
+  for (const item of g.items) {
+    LABELS[item.id] = item.label;
+  }
+}
 
-	useEffect(() => {
-		api.health().then((h) => setVersion(h.version)).catch(() => {});
-	}, []);
+type LayoutProps = {
+  active: string;
+  children: ReactNode;
+  onOpenPalette?: () => void;
+};
 
-	useEffect(() => {
-		applyTheme(theme);
-		window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-	}, [theme]);
+export function Layout({ active, children, onOpenPalette }: LayoutProps) {
+  const [version, setVersion] = useState<string | null>(null);
+  const [theme, setTheme] = useState<UiTheme>(resolveInitialTheme);
 
-	useEffect(() => {
-		localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
-	}, [sidebarCollapsed]);
+  useEffect(() => {
+    api.health().then((h) => setVersion(h.version)).catch(() => {});
+  }, []);
 
-	const isActive = (id: string) =>
-		active === id ||
-		(id === "runs" && active === "run") ||
-		(id === "projects" && active === "project");
+  useEffect(() => {
+    applyTheme(theme);
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
-	const toggleSidebar = () => setSidebarCollapsed((prev) => !prev);
+  const isActive = (id: string) =>
+    active === id ||
+    (id === "history" && (active === "runs" || active === "run")) ||
+    (id === "pipelines" && active === "pipelineEditor");
 
-	return (
-		<div className="h-full flex">
-			{/* Sidebar */}
-			<aside
-				className={`${sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH} shrink-0 border-r border-ink-700/50 bg-ink-900/95 flex flex-col backdrop-blur-sm transition-all duration-300 ease-out`}
-			>
-				{/* Logo area */}
-				<div className={`${sidebarCollapsed ? "px-2 py-4" : "px-4 py-4"} border-b border-ink-700/50 transition-all duration-300`}>
-					<div className="flex items-center gap-3">
-						<div className="relative flex-shrink-0">
-							<div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-accent-dim flex items-center justify-center shadow-lg shadow-accent/20">
-								<svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor">
-									<path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-								</svg>
-							</div>
-							{sidebarCollapsed && (
-								<div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-ink-900" />
-							)}
-						</div>
-						{!sidebarCollapsed && (
-							<div className="min-w-0 overflow-hidden">
-								<span className="font-semibold text-ink-100 tracking-tight block">OpenThinking</span>
-								<span className="text-[10px] text-ink-400 font-mono">v{version ?? "—"}</span>
-							</div>
-							)}
-					</div>
-				</div>
+  const activeLabel = LABELS[active] ?? "Dashboard";
+  const project = "feature-development";
 
-				{/* Navigation */}
-				<nav className="flex-1 py-3 px-2">
-					{NAV.map((item) => (
-						<a
-							key={item.id}
-							href={item.href}
-							title={sidebarCollapsed ? item.label : undefined}
-							className={`
-								flex items-center gap-3 px-2.5 py-2.5 text-sm rounded-lg transition-all duration-200 group
-								${isActive(item.id)
-									? "bg-accent/10 text-accent border-l-2 border-accent"
-									: "text-ink-400 hover:text-ink-100 hover:bg-ink-800/60 border-l-2 border-transparent"
-								}
-								${sidebarCollapsed ? "justify-center" : ""}
-							`}
-						>
-							<svg
-								className={`w-5 h-5 flex-shrink-0 transition-transform duration-200 ${isActive(item.id) ? "text-accent" : "group-hover:scale-110"}`}
-								viewBox="0 0 24 24"
-								fill="currentColor"
-							>
-								<path d={item.icon} />
-							</svg>
-							{!sidebarCollapsed && (
-								<span className="font-medium">{item.label}</span>
-							)}
-						</a>
-					))}
-				</nav>
+  return (
+    <div
+      style={{
+        fontFamily: "var(--font-sans)",
+        color: "var(--fg)",
+        background: "var(--bg)",
+        fontSize: 14,
+        lineHeight: 1.5,
+        WebkitFontSmoothing: "antialiased",
+        letterSpacing: "-0.003em",
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        overflow: "hidden",
+      }}
+    >
+      {/* Sidebar */}
+      <aside
+        style={{
+          width: 232,
+          flexShrink: 0,
+          borderRight: "1px solid var(--border)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {/* Brand + project */}
+        <div style={{ padding: "16px 14px 10px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 14,
+              padding: "2px 4px",
+            }}
+          >
+            <Logomark size={22} />
+            <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: -0.2 }}>
+              Open<span style={{ color: "var(--cyan-500)" }}>Thinking</span>
+            </span>
+          </div>
 
-				{/* Footer / Toggle */}
-				<div className="p-2 border-t border-ink-700/50">
-					<button
-						onClick={toggleSidebar}
-						type="button"
-						title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-						className={`
-							w-full flex items-center gap-2 px-2.5 py-2 text-xs text-ink-400 hover:text-ink-200
-							hover:bg-ink-800/50 rounded-lg transition-all duration-200
-							${sidebarCollapsed ? "justify-center" : ""}
-						`}
-					>
-						<svg
-							className={`w-4 h-4 transition-transform duration-300 ${sidebarCollapsed ? "" : "rotate-180"}`}
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="2"
-						>
-							<path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round"/>
-						</svg>
-						{!sidebarCollapsed && <span>Collapse</span>}
-					</button>
-				</div>
-			</aside>
+          {/* Project selector */}
+          <button
+            type="button"
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 10px",
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--r-md)",
+              cursor: "pointer",
+              fontSize: 13,
+              color: "var(--fg)",
+              textAlign: "left",
+              fontFamily: "inherit",
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 3,
+                background: "var(--cyan-500)",
+              }}
+            />
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.2 }}>
+                Project
+              </div>
+              <div style={{ fontWeight: 500, lineHeight: 1.3 }}>{project}</div>
+            </div>
+            <span style={{ color: "var(--fg-dim)" }}>{Icons.chevDown}</span>
+          </button>
+        </div>
 
-			{/* Main */}
-			<main className="flex-1 min-w-0 flex flex-col bg-ink-950 relative">
-				{/* Header - Glass effect */}
-				<header className="h-14 shrink-0 border-b border-ink-700/50 bg-ink-900/70 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-40">
-					<div className="min-w-0 flex items-center gap-4">
-						<div>
-							<h1 className="text-sm font-semibold text-ink-100">{section.title}</h1>
-							<p className="text-[11px] text-ink-400 truncate">{section.subtitle}</p>
-						</div>
-					</div>
-					<div className="flex items-center gap-3">
-						<button
-							className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-ink-300 hover:text-ink-100 bg-ink-800/50 hover:bg-ink-700/50 border border-ink-600/50 rounded-lg transition-all duration-200"
-							onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-							type="button"
-						>
-							{theme === "dark" ? (
-								<svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-									<circle cx="12" cy="12" r="5" />
-									<line x1="12" y1="1" x2="12" y2="3" />
-									<line x1="12" y1="21" x2="12" y2="23" />
-									<line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-									<line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-									<line x1="1" y1="12" x2="3" y2="12" />
-									<line x1="21" y1="12" x2="23" y2="12" />
-									<line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-									<line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-								</svg>
-							) : (
-								<svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-									<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-								</svg>
-								)}
-							<span className="hidden sm:inline">{theme === "dark" ? "Light" : "Dark"}</span>
-						</button>
-						<div className="hidden sm:flex items-center gap-2 text-[11px] text-ink-400 font-mono bg-ink-800/50 px-2 py-1 rounded-md border border-ink-700/50">
-							<span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-							127.0.0.1
-						</div>
-					</div>
-				</header>
-				<div className="flex-1 overflow-auto">{children}</div>
-			</main>
-		</div>
-	);
+        {/* Command palette trigger */}
+        <div style={{ padding: "0 14px 14px" }}>
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 10px",
+              background: "transparent",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--r-md)",
+              cursor: "pointer",
+              fontSize: 12.5,
+              color: "var(--fg-muted)",
+              fontFamily: "inherit",
+            }}
+          >
+            <span style={{ color: "var(--fg-dim)" }}>{Icons.search}</span>
+            <span style={{ flex: 1, textAlign: "left" }}>Search or run</span>
+            <span
+              className="mono"
+              style={{
+                fontSize: 10.5,
+                padding: "1px 5px",
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: 3,
+                color: "var(--fg-dim)",
+              }}
+            >
+              ⌘K
+            </span>
+          </button>
+        </div>
+
+        {/* Nav groups */}
+        <nav
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "0 8px 12px",
+          }}
+        >
+          {NAV_GROUPS.map((group) => (
+            <div key={group.group} style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  padding: "4px 10px 6px",
+                  fontSize: 10.5,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.6,
+                  color: "var(--fg-dim)",
+                  fontWeight: 600,
+                }}
+              >
+                {group.group}
+              </div>
+              {group.items.map((item) => {
+                const itemActive = isActive(item.id);
+                return (
+                  <a
+                    key={item.id}
+                    href={item.href}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "6px 10px",
+                      background: itemActive ? "var(--bg-card)" : "transparent",
+                      border: "none",
+                      borderRadius: "var(--r-sm)",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: itemActive ? 500 : 400,
+                      color: itemActive ? "var(--fg)" : "var(--fg-muted)",
+                      textAlign: "left",
+                      marginBottom: 1,
+                      boxShadow: itemActive ? "var(--shadow-sm)" : "none",
+                      position: "relative",
+                      textDecoration: "none",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!itemActive)
+                        (e.currentTarget as HTMLElement).style.background =
+                          "var(--bg-hover)";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!itemActive)
+                        (e.currentTarget as HTMLElement).style.background = "transparent";
+                    }}
+                  >
+                    {itemActive && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          left: -8,
+                          top: 8,
+                          bottom: 8,
+                          width: 2,
+                          background: "var(--cyan-500)",
+                          borderRadius: 2,
+                        }}
+                      />
+                    )}
+                    <span
+                      style={{
+                        color: itemActive ? "var(--cyan-600)" : "var(--fg-dim)",
+                      }}
+                    >
+                      {item.icon}
+                    </span>
+                    <span style={{ flex: 1 }}>{item.label}</span>
+                    {item.count != null && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: "var(--fg-dim)",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {item.count}
+                      </span>
+                    )}
+                    {item.kbd && (
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: 10,
+                          padding: "1px 4px",
+                          background: "var(--bg-soft)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 3,
+                          color: "var(--fg-dim)",
+                        }}
+                      >
+                        {item.kbd}
+                      </span>
+                    )}
+                  </a>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        {/* Footer: user + theme toggle */}
+        <div
+          style={{
+            borderTop: "1px solid var(--border)",
+            padding: "10px 12px",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <div
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: 13,
+              background:
+                "linear-gradient(135deg, var(--cyan-600), var(--cyan-400))",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#fff",
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          >
+            OT
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.2 }}>
+              Local
+            </div>
+            <div style={{ fontSize: 11, color: "var(--fg-dim)", lineHeight: 1.2 }}>
+              v{version ?? "—"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setTheme((current) => (current === "dark" ? "light" : "dark"))
+            }
+            style={{
+              width: 26,
+              height: 26,
+              border: "1px solid var(--border)",
+              background: "var(--bg-card)",
+              borderRadius: "var(--r-sm)",
+              cursor: "pointer",
+              color: "var(--fg-muted)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {theme === "dark" ? Icons.sun : Icons.moon}
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <main
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          minWidth: 0,
+          background: "var(--bg)",
+        }}
+      >
+        {/* Topbar: breadcrumbs + actions */}
+        <header
+          style={{
+            height: 48,
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            padding: "0 20px",
+            gap: 12,
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13,
+              color: "var(--fg-muted)",
+            }}
+          >
+            <span>{project}</span>
+            <span style={{ color: "var(--fg-dim)" }}>{Icons.chevRight}</span>
+            <span style={{ color: "var(--fg)", fontWeight: 500 }}>
+              {activeLabel}
+            </span>
+          </div>
+          <div style={{ flex: 1 }} />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              fontSize: 12,
+              color: "var(--fg-muted)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                className="ot-pulse"
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 3,
+                  background: "var(--ok)",
+                }}
+              />
+              <span>Online</span>
+            </div>
+            <div
+              style={{
+                width: 1,
+                height: 14,
+                background: "var(--border)",
+              }}
+            />
+            <button
+              type="button"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--r-sm)",
+                cursor: "pointer",
+                fontSize: 12,
+                color: "var(--fg)",
+                fontFamily: "inherit",
+              }}
+            >
+              {Icons.bell}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.location.hash = "#/run";
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "5px 10px 5px 8px",
+                background: "var(--cyan-500)",
+                border: "none",
+                borderRadius: "var(--r-sm)",
+                cursor: "pointer",
+                fontSize: 12,
+                color: "#fff",
+                fontWeight: 500,
+                fontFamily: "inherit",
+              }}
+            >
+              {Icons.play}
+              <span>Run</span>
+            </button>
+          </div>
+        </header>
+
+        {/* View body */}
+        <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
+      </main>
+    </div>
+  );
 }

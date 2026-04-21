@@ -18,4 +18,10 @@ export function resolveInitialTheme(): UiTheme {
 export function applyTheme(theme: UiTheme): void {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
+  // New design system uses .theme-dark on body
+  if (theme === "dark") {
+    document.body.classList.add("theme-dark");
+  } else {
+    document.body.classList.remove("theme-dark");
+  }
 }
