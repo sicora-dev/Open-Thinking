@@ -21,6 +21,7 @@ import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
 import { type Result, err, ok } from "../../shared/result";
 import type { LLMProvider, PipelineEvent } from "../../shared/types";
+import { getProjectDir, hasProjectWorkspace } from "../../workspace";
 import {
   type PipelineIndexEntry,
   touchPipeline,
@@ -104,6 +105,10 @@ function finishRun(
 export type StartRunInput = {
   entry: PipelineIndexEntry;
   input: string;
+  workspace?: {
+    projectId: string;
+    path: string;
+  } | null;
 };
 
 export async function startRun(
@@ -150,12 +155,16 @@ export async function startRun(
     emitRunEvent(runState, evt.type, evt);
   });
 
-  const contextStore = createContextStore({ dbPath: ":memory:" });
+  const workingDir = inputArgs.workspace?.path ?? (inputArgs.entry.rootPath || dirname(inputArgs.entry.path));
+  const contextStore = createContextStore({
+    dbPath: hasProjectWorkspace(workingDir)
+      ? join(getProjectDir(workingDir), "context.db")
+      : ":memory:",
+  });
   await contextStore.set("input.prompt", inputArgs.input, "user");
 
-  const workingDir = inputArgs.entry.rootPath || dirname(inputArgs.entry.path);
   const skillsDir =
-    inputArgs.entry.scope === "project"
+    inputArgs.workspace || inputArgs.entry.scope === "project"
       ? getProjectSkillsDir(workingDir)
       : join(getOpenthkConfigDir(), "skills");
 

@@ -3,6 +3,7 @@ import { EmptyState } from "../components/EmptyState";
 import { SkillManager } from "../components/SkillManager";
 import { useToast } from "../components/ToastProvider";
 import { api, type PipelineEntry, type ProjectEntry } from "../lib/api";
+import { writeSelectedWorkspaceProjectId } from "../lib/workspace-selection";
 
 const STARTER_YAML = (name: string) => `name: ${name}
 version: "0.1.0"
@@ -43,6 +44,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 
         setProject(selectedProject);
         setPipelines(projectPipelines);
+        writeSelectedWorkspaceProjectId(selectedProject.id);
       })
       .catch((e) => {
         const message = (e as Error).message;
@@ -190,6 +192,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 
       {runDialog && (
         <RunDialog
+          project={project}
           pipeline={runDialog}
           onClose={() => setRunDialog(null)}
           onStarted={(runId) => {
@@ -264,10 +267,12 @@ function CreateProjectPipelineModal({
 }
 
 function RunDialog({
+  project,
   pipeline,
   onClose,
   onStarted,
 }: {
+  project: ProjectEntry;
   pipeline: PipelineEntry;
   onClose: () => void;
   onStarted: (runId: string) => void;
@@ -285,7 +290,8 @@ function RunDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await api.runPipeline(pipeline.id, input);
+      writeSelectedWorkspaceProjectId(project.id);
+      const result = await api.runPipeline(pipeline.id, input.trim(), { projectId: project.id });
       onStarted(result.runId);
     } catch (e) {
       const message = (e as Error).message;
@@ -306,6 +312,13 @@ function RunDialog({
           </button>
         </div>
         <div className="p-4 space-y-3">
+          <div>
+            <div className="label block mb-1">Workspace</div>
+            <div className="rounded-md border border-ink-700 bg-ink-900/50 px-3 py-2 text-xs">
+              <div className="font-medium text-ink-100">{project.name}</div>
+              <div className="font-mono text-ink-400 truncate" title={project.path}>{project.path}</div>
+            </div>
+          </div>
           <label className="label block mb-1">Input prompt</label>
           <textarea
             className="input font-mono text-xs"

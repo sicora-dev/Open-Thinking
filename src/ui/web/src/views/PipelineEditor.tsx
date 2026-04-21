@@ -21,6 +21,10 @@ import { EmptyState } from "../components/EmptyState";
 import { useToast } from "../components/ToastProvider";
 import { api, type PipelineEntry, type ProjectEntry, type ProviderInfo, type SkillEntry } from "../lib/api";
 import { subscribeRunStream, type RunStreamState } from "../lib/run-stream";
+import {
+  resolveSelectedWorkspaceProjectId,
+  writeSelectedWorkspaceProjectId,
+} from "../lib/workspace-selection";
 
 type PipelineMode = "sequential" | "orchestrated";
 type NodeKind = "stage" | "orchestrator" | "input" | "output";
@@ -137,6 +141,7 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const [saveAsTarget, setSaveAsTarget] = useState("global");
   const [saveAsName, setSaveAsName] = useState("");
   const [runInput, setRunInput] = useState("");
+  const [runProjectId, setRunProjectId] = useState("");
   const [runBusy, setRunBusy] = useState(false);
   const [runEvents, setRunEvents] = useState<StreamEvent[]>([]);
   const [runActive, setRunActive] = useState(false);
@@ -173,6 +178,10 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
 
         const rawDocument = parseYaml(pipeline.yaml) as RawPipelineDocument;
         const editorState = createEditorState(rawDocument, pipeline.entry.path);
+        const nextRunProjectId =
+          pipeline.entry.projectId && projectList.some((project) => project.id === pipeline.entry.projectId)
+            ? pipeline.entry.projectId
+            : resolveSelectedWorkspaceProjectId(projectList);
 
         setEntry(pipeline.entry);
         setDraft(editorState.meta);
@@ -182,6 +191,8 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
         setProviders(providerList);
         setProjects(projectList);
         setSkills(skillList.sort(compareSkillsForEditor));
+        setRunProjectId(nextRunProjectId);
+        if (pipeline.entry.projectId) writeSelectedWorkspaceProjectId(pipeline.entry.projectId);
         setSaveAsTarget(
           pipeline.entry.projectId &&
             projectList.some((project) => project.id === pipeline.entry.projectId)
@@ -217,6 +228,13 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
   const selectedProject = useMemo(
     () => (entry?.projectId ? projects.find((project) => project.id === entry.projectId) ?? null : null),
     [entry?.projectId, projects],
+  );
+  const selectedRunProject = useMemo(
+    () =>
+      entry?.projectId
+        ? projects.find((project) => project.id === entry.projectId) ?? null
+        : projects.find((project) => project.id === runProjectId) ?? null,
+    [entry?.projectId, projects, runProjectId],
   );
   const stageNodes = useMemo(
     () => nodes.filter((node) => isStageKind(node.data.kind)),
@@ -528,6 +546,19 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
       pushToast({ kind: "error", title: "Run input required", description: message });
       return;
     }
+    const effectiveProjectId = entry.projectId ?? runProjectId;
+    if (entry.scope === "project" && !effectiveProjectId) {
+      const message = "Project workspace is unavailable for this pipeline.";
+      setError(message);
+      pushToast({ kind: "error", title: "Workspace required", description: message });
+      return;
+    }
+    if (entry.scope === "global" && projects.length > 0 && !selectedRunProject) {
+      const message = "Select a workspace before starting the run.";
+      setError(message);
+      pushToast({ kind: "error", title: "Workspace required", description: message });
+      return;
+    }
 
     setRunBusy(true);
     setError(null);
@@ -539,7 +570,10 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
         lastSavedYamlRef.current = pipelineYaml;
       }
 
-      const result = await api.runPipeline(entry.id, runInput.trim());
+      if (effectiveProjectId) writeSelectedWorkspaceProjectId(effectiveProjectId);
+      const result = await api.runPipeline(entry.id, runInput.trim(), {
+        projectId: effectiveProjectId || undefined,
+      });
       runStreamRef.current?.();
       runStreamRef.current = null;
       setRunId(result.runId);
@@ -1154,8 +1188,51 @@ function PipelineEditorInner({ pipelineId }: { pipelineId: string }) {
             onChange={(event) => setRunInput(event.target.value)}
           />
 
+          <div>
+            <label className="label block mb-1">Workspace</label>
+            {entry?.scope === "project" ? (
+              <div className="rounded-md border border-ink-700 bg-ink-900/50 px-3 py-2 text-xs">
+                <div className="font-medium text-ink-100">
+                  {selectedRunProject?.name ?? "Project workspace"}
+                </div>
+                <div className="font-mono text-ink-400 truncate" title={selectedRunProject?.path ?? entry.rootPath}>
+                  {selectedRunProject?.path ?? entry.rootPath}
+                </div>
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="rounded-md border border-ink-700 bg-ink-900/50 px-3 py-2 text-xs text-ink-400">
+                No project workspaces registered. This run will use the pipeline location.
+              </div>
+            ) : (
+              <>
+                <select
+                  className="input"
+                  value={runProjectId}
+                  onChange={(event) => setRunProjectId(event.target.value)}
+                  disabled={runBusy}
+                >
+                  <option value="">Select workspace…</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name} ({project.path})
+                    </option>
+                  ))}
+                </select>
+                {selectedRunProject && (
+                  <div className="mt-1 text-[11px] text-ink-400 font-mono truncate" title={selectedRunProject.path}>
+                    {selectedRunProject.path}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
           <div className="flex items-center gap-3">
-            <button className="btn-accent" onClick={startRun} disabled={runBusy || !validation.ok}>
+            <button
+              className="btn-accent"
+              onClick={startRun}
+              disabled={runBusy || !validation.ok || (entry?.scope === "global" && projects.length > 0 && !selectedRunProject)}
+            >
               {runBusy ? "Starting…" : "Run Pipeline"}
             </button>
             {runActive && (

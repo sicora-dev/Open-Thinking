@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
 import { useToast } from "../components/ToastProvider";
-import { api, type PipelineEntry } from "../lib/api";
+import { api, type PipelineEntry, type ProjectEntry } from "../lib/api";
+import {
+  resolveSelectedWorkspaceProjectId,
+  writeSelectedWorkspaceProjectId,
+} from "../lib/workspace-selection";
 
 const STARTER_YAML = (name: string) => `name: ${name}
 version: "0.1.0"
@@ -23,15 +27,18 @@ stages:
 export function Pipelines() {
   const { pushToast } = useToast();
   const [pipelines, setPipelines] = useState<PipelineEntry[]>([]);
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [runDialog, setRunDialog] = useState<PipelineEntry | null>(null);
 
   const load = () => {
     setError(null);
-    api
-      .listPipelines()
-      .then(setPipelines)
+    Promise.all([api.listPipelines(), api.listProjects()])
+      .then(([nextPipelines, nextProjects]) => {
+        setPipelines(nextPipelines);
+        setProjects(nextProjects);
+      })
       .catch((e) => {
         const message = (e as Error).message;
         setError(message);
@@ -147,6 +154,7 @@ export function Pipelines() {
       {runDialog && (
         <RunDialog
           pipeline={runDialog}
+          projects={projects}
           onClose={() => setRunDialog(null)}
           onStarted={(runId) => {
             pushToast({ kind: "success", title: "Run started", description: runId });
@@ -223,27 +231,45 @@ function CreatePipelineModal({
 
 function RunDialog({
   pipeline,
+  projects,
   onClose,
   onStarted,
 }: {
   pipeline: PipelineEntry;
+  projects: ProjectEntry[];
   onClose: () => void;
   onStarted: (runId: string) => void;
 }) {
   const { pushToast } = useToast();
   const [input, setInput] = useState("");
+  const [projectId, setProjectId] = useState(() =>
+    resolveSelectedWorkspaceProjectId(projects),
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setProjectId((current) => resolveSelectedWorkspaceProjectId(projects, current));
+  }, [projects]);
+
+  const selectedProject = projects.find((project) => project.id === projectId) ?? null;
 
   const run = async () => {
     if (!input.trim()) {
       setError("Input is required.");
       return;
     }
+    if (projects.length > 0 && !selectedProject) {
+      setError("Select a workspace before starting the run.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const r = await api.runPipeline(pipeline.id, input);
+      if (selectedProject) writeSelectedWorkspaceProjectId(selectedProject.id);
+      const r = await api.runPipeline(pipeline.id, input.trim(), {
+        projectId: selectedProject?.id,
+      });
       onStarted(r.runId);
     } catch (e) {
       const message = (e as Error).message;
@@ -264,6 +290,35 @@ function RunDialog({
           </button>
         </div>
         <div className="p-4 space-y-3">
+          <div>
+            <label className="label block mb-1">Workspace</label>
+            {projects.length === 0 ? (
+              <div className="rounded-md border border-ink-700 bg-ink-900/50 px-3 py-2 text-xs text-ink-400">
+                No project workspaces registered. This run will use the pipeline location.
+              </div>
+            ) : (
+              <>
+                <select
+                  className="input"
+                  value={projectId}
+                  onChange={(event) => setProjectId(event.target.value)}
+                  disabled={busy}
+                >
+                  <option value="">Select workspace…</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name} ({project.path})
+                    </option>
+                  ))}
+                </select>
+                {selectedProject && (
+                  <div className="mt-1 text-[11px] text-ink-400 font-mono truncate" title={selectedProject.path}>
+                    {selectedProject.path}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
           <label className="label block mb-1">Input prompt</label>
           <textarea
             className="input font-mono text-xs"
@@ -278,7 +333,7 @@ function RunDialog({
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn-accent" disabled={busy} onClick={run}>
+          <button className="btn-accent" disabled={busy || (projects.length > 0 && !selectedProject)} onClick={run}>
             {busy ? "Starting..." : "Run"}
           </button>
         </div>

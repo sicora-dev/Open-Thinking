@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Dag, type DagStage } from "../components/Dag";
 import { Icons } from "../components/Icons";
 import { useToast } from "../components/ToastProvider";
-import { api, type PipelineEntry, type RunRow } from "../lib/api";
+import { api, type PipelineEntry, type ProjectEntry, type RunRow } from "../lib/api";
 import {
   formatDurationMs,
   formatMoney,
@@ -15,6 +15,10 @@ import {
   type StageProjection,
 } from "../lib/run-events";
 import { subscribeRunStream, type RunStreamState } from "../lib/run-stream";
+import {
+  resolveSelectedWorkspaceProjectId,
+  writeSelectedWorkspaceProjectId,
+} from "../lib/workspace-selection";
 
 const btnGhost: React.CSSProperties = {
   display: "inline-flex",
@@ -54,7 +58,9 @@ export function RunPipeline() {
   const seenSeqsRef = useRef<Set<number>>(new Set());
   const [width, setWidth] = useState(1200);
   const [pipelines, setPipelines] = useState<PipelineEntry[]>([]);
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [selectedId, setSelectedId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [input, setInput] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RunRow | null>(null);
@@ -79,9 +85,16 @@ export function RunPipeline() {
 
   const loadPipelines = useCallback(async () => {
     try {
-      const next = await api.listPipelines();
-      setPipelines(next);
-      setSelectedId((current) => current || next[0]?.id || "");
+      const [nextPipelines, nextProjects] = await Promise.all([
+        api.listPipelines(),
+        api.listProjects(),
+      ]);
+      setPipelines(nextPipelines);
+      setProjects(nextProjects);
+      setSelectedId((current) => current || nextPipelines[0]?.id || "");
+      setSelectedProjectId((current) =>
+        resolveSelectedWorkspaceProjectId(nextProjects, current),
+      );
       setError(null);
     } catch (e) {
       const message = (e as Error).message;
@@ -142,6 +155,7 @@ export function RunPipeline() {
   }, [active, loadRun, runId]);
 
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === selectedId) ?? null;
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const projection = run ? projectRun(run, events) : null;
   const stages = projection?.stages ?? [];
   const activeStage = projection?.activeStageId ?? null;
@@ -174,9 +188,16 @@ export function RunPipeline() {
       setError("Input is required.");
       return;
     }
+    if (projects.length > 0 && !selectedProject) {
+      setError("Select a workspace before starting the run.");
+      return;
+    }
     setBusy(true);
     try {
-      const result = await api.runPipeline(selectedPipeline.id, input.trim());
+      if (selectedProject) writeSelectedWorkspaceProjectId(selectedProject.id);
+      const result = await api.runPipeline(selectedPipeline.id, input.trim(), {
+        projectId: selectedProject?.id,
+      });
       setRunId(result.runId);
       setRun(null);
       setEvents([]);
@@ -239,6 +260,37 @@ export function RunPipeline() {
             </div>
           )}
 
+          <div style={{ marginTop: 20, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--fg-dim)", fontWeight: 600, marginBottom: 10 }}>Workspace</div>
+          {projects.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.45 }}>
+              No project workspaces registered. Runs use the pipeline location.
+            </div>
+          ) : (
+            <>
+              <select
+                value={selectedProjectId}
+                onChange={(event) => setSelectedProjectId(event.target.value)}
+                disabled={busy}
+                style={{
+                  width: "100%", padding: "10px 12px",
+                  background: "var(--bg-card)", border: "1px solid var(--border)",
+                  borderRadius: "var(--r-md)", color: "var(--fg)",
+                  fontSize: 13, fontFamily: "inherit", outline: "none",
+                }}
+              >
+                <option value="">Select workspace...</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name} ({project.path})</option>
+                ))}
+              </select>
+              {selectedProject && (
+                <div className="mono" style={{ marginTop: 8, fontSize: 11.5, color: "var(--fg-muted)", overflowWrap: "anywhere" }}>
+                  {selectedProject.path}
+                </div>
+              )}
+            </>
+          )}
+
           <div style={{ marginTop: 20, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--fg-dim)", fontWeight: 600, marginBottom: 10 }}>Input</div>
           <textarea
             value={input}
@@ -255,7 +307,7 @@ export function RunPipeline() {
           <button
             type="button"
             onClick={start}
-            disabled={busy || !selectedPipeline || !input.trim()}
+            disabled={busy || !selectedPipeline || !input.trim() || (projects.length > 0 && !selectedProject)}
             style={{
               marginTop: 22, width: "100%",
               display: "flex", alignItems: "center", justifyContent: "center", gap: 8,

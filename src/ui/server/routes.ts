@@ -487,9 +487,25 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
   if (pipelineRunParams && method === "POST") {
     const entry = getIndexedPipeline(pipelineRunParams.id ?? "");
     if (!entry) return notFound("Pipeline not registered");
-    const body = await readJsonBody<{ input: string }>(req);
+    const body = await readJsonBody<{ input: string; projectId?: string | null }>(req);
     if (!body?.input) return badRequest("`input` is required");
-    const result = await startRun({ entry, input: body.input });
+
+    let workspace: { projectId: string; path: string } | null = null;
+    if (entry.scope === "project") {
+      if (!entry.projectId) return notFound("Project not registered");
+      if (body.projectId && body.projectId !== entry.projectId) {
+        return badRequest("Project pipelines must run in their own project workspace");
+      }
+      const project = getIndexedProject(entry.projectId);
+      if (!project) return notFound("Project not registered");
+      workspace = { projectId: project.id, path: project.path };
+    } else if (body.projectId) {
+      const project = getIndexedProject(body.projectId);
+      if (!project) return notFound("Project not registered");
+      workspace = { projectId: project.id, path: project.path };
+    }
+
+    const result = await startRun({ entry, input: body.input, workspace });
     if (!result.ok) return badRequest(result.error.message);
     return json({ ok: true, runId: result.value.runId }, 202);
   }

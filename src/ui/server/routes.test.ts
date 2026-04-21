@@ -173,6 +173,32 @@ stages:
     expect(body.error).toBeUndefined();
   });
 
+  test("POST /api/pipelines/:id/run rejects an unknown workspace project", async () => {
+    const createPipeline = await fetch(`${baseUrl}/api/pipelines`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "workspace-run",
+        content: "name: workspace-run\nversion: \"0.1.0\"\nmode: sequential\nproviders: []\nstages: {}\n",
+      }),
+    });
+    expect(createPipeline.status).toBe(201);
+    const pipelineBody = (await createPipeline.json()) as {
+      pipeline: { id: string };
+    };
+
+    const run = await fetch(`${baseUrl}/api/pipelines/${pipelineBody.pipeline.id}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "hello", projectId: "missing-project" }),
+    });
+    expect(run.status).toBe(404);
+
+    await fetch(`${baseUrl}/api/pipelines/${pipelineBody.pipeline.id}`, {
+      method: "DELETE",
+    });
+  });
+
   test("projects endpoint registers a project and creates project-local pipelines", async () => {
     const projectDir = join(tmp, "sample-project");
     mkdirSync(projectDir, { recursive: true });

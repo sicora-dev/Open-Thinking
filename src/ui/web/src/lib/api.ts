@@ -164,10 +164,10 @@ export const api = {
     }),
   deletePipeline: (id: string) =>
     req<{ ok: boolean }>(`/api/pipelines/${id}`, { method: "DELETE" }),
-  runPipeline: (id: string, input: string) =>
+  runPipeline: (id: string, input: string, options?: { projectId?: string | null }) =>
     req<{ runId: string }>(`/api/pipelines/${id}/run`, {
       method: "POST",
-      body: JSON.stringify({ input }),
+      body: JSON.stringify({ input, projectId: options?.projectId ?? undefined }),
     }),
 
   // Runs

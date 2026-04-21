@@ -1,12 +1,16 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, type ProjectEntry } from "../lib/api";
 import {
   THEME_STORAGE_KEY,
   applyTheme,
   resolveInitialTheme,
   type UiTheme,
 } from "../lib/theme";
+import {
+  SELECTED_WORKSPACE_CHANGE_EVENT,
+  readSelectedWorkspaceProjectId,
+} from "../lib/workspace-selection";
 import { Icons } from "./Icons";
 import { Logomark } from "./Logomark";
 
@@ -68,6 +72,7 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
   const [workspaceLabel, setWorkspaceLabel] = useState("Workspace");
   const [serverStatus, setServerStatus] = useState<"loading" | "online" | "offline">("loading");
   const [theme, setTheme] = useState<UiTheme>(resolveInitialTheme);
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
 
   useEffect(() => {
     api
@@ -80,13 +85,28 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
 
     api
       .listProjects()
-      .then((projects) => {
-        if (projects.length === 1) setWorkspaceLabel(projects[0].name);
-        else if (projects.length > 1) setWorkspaceLabel(`${projects.length} projects`);
-        else setWorkspaceLabel("Global workspace");
-      })
+      .then(setProjects)
       .catch(() => setWorkspaceLabel("Workspace"));
   }, []);
+
+  useEffect(() => {
+    const updateWorkspaceLabel = () => {
+      const selectedProjectId = readSelectedWorkspaceProjectId();
+      const selectedProject = projects.find((project) => project.id === selectedProjectId);
+      if (selectedProject) setWorkspaceLabel(selectedProject.name);
+      else if (projects.length === 1) setWorkspaceLabel(projects[0].name);
+      else if (projects.length > 1) setWorkspaceLabel(`${projects.length} projects`);
+      else setWorkspaceLabel("Global workspace");
+    };
+
+    updateWorkspaceLabel();
+    window.addEventListener(SELECTED_WORKSPACE_CHANGE_EVENT, updateWorkspaceLabel);
+    window.addEventListener("storage", updateWorkspaceLabel);
+    return () => {
+      window.removeEventListener(SELECTED_WORKSPACE_CHANGE_EVENT, updateWorkspaceLabel);
+      window.removeEventListener("storage", updateWorkspaceLabel);
+    };
+  }, [projects]);
 
   useEffect(() => {
     applyTheme(theme);
