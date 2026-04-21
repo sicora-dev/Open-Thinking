@@ -10,13 +10,14 @@ import { type Result, err, ok } from "../../shared/result";
  */
 import type { LLMProvider, ResolvedProvider } from "../../shared/types";
 import { createAdapter } from "./base-adapter";
+import { getAzureProtocolForBaseUrl } from "./customizations/azure";
 import { getProtocol } from "./customizations";
 
 export function createProviderFromConfig(
   name: string,
   config: ResolvedProvider,
 ): Result<LLMProvider> {
-  const protocol = getProtocol(name);
+  const protocol = name === "azure" ? getAzureProtocolForBaseUrl(config.base_url) : getProtocol(name);
 
   if (protocol.requiresApiKey && !config.api_key) {
     return err(
@@ -24,8 +25,11 @@ export function createProviderFromConfig(
     );
   }
 
-  // Ollama uses /v1 sub-path for OpenAI compatibility
-  const baseUrl = config.type === "ollama" ? `${config.base_url}/v1` : config.base_url;
+  // Ollama uses /v1 sub-path for OpenAI compatibility.
+  const baseUrl =
+    config.type === "ollama"
+      ? `${config.base_url.replace(/\/v1\/?$/, "").replace(/\/+$/, "")}/v1`
+      : config.base_url;
 
   return ok(
     createAdapter({

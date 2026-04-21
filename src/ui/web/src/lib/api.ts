@@ -47,6 +47,22 @@ export type ProviderInfo = {
   signupUrl?: string;
   requiresKey: boolean;
   configured: boolean;
+  supported: boolean;
+  fields: ProviderConfigField[];
+  values: Record<string, string>;
+  checkedAt: string | null;
+};
+
+export type ProviderConfigField = {
+  key: string;
+  label: string;
+  type: "text" | "password" | "url";
+  required: boolean;
+  secret?: boolean;
+  placeholder?: string;
+  help?: string;
+  defaultValue?: string;
+  configured?: boolean;
 };
 
 export type RunRow = {
@@ -194,11 +210,13 @@ export const api = {
   // Providers
   listProviders: () =>
     req<{ providers: ProviderInfo[] }>("/api/providers").then((r) => r.providers),
-  saveProvider: (id: string, apiKey: string) =>
-    req<{ ok: boolean }>("/api/providers", {
+  saveProvider: (id: string, values: Record<string, string>) =>
+    req<{ ok: boolean; checkedAt: string }>("/api/providers", {
       method: "POST",
-      body: JSON.stringify({ id, apiKey }),
+      body: JSON.stringify({ id, values }),
     }),
+  checkProvider: (id: string) =>
+    req<{ ok: boolean }>(`/api/providers/${id}/check`, { method: "POST" }),
   removeProvider: (id: string) =>
     req<{ ok: boolean }>(`/api/providers/${id}`, { method: "DELETE" }),
 

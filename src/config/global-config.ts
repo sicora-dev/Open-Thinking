@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Result, err, ok } from "../shared/result";
 import { getOpenthkConfigDir } from "./paths";
+import { getCatalogProvider, type CatalogProvider } from "./provider-catalog";
 
 function getProvidersFile(): string {
   return join(getOpenthkConfigDir(), "providers.json");
@@ -15,10 +16,13 @@ function getProvidersFile(): string {
 export type ProviderEntry = {
   id: string;
   name: string;
-  apiKey: string;
+  apiKey?: string;
   baseUrl: string;
   type: "openai-compatible" | "ollama" | "custom";
+  headers?: Record<string, string>;
+  config?: Record<string, string>;
   addedAt: string;
+  checkedAt?: string;
 };
 
 export type GlobalConfig = {
@@ -78,6 +82,11 @@ export function getProviderApiKey(id: string): string | null {
   return config.providers[id]?.apiKey ?? null;
 }
 
+export function getProviderEntry(id: string): ProviderEntry | null {
+  const config = loadGlobalConfig();
+  return config.providers[id] ?? null;
+}
+
 export function listProviders(): ProviderEntry[] {
   const config = loadGlobalConfig();
   return Object.values(config.providers);
@@ -108,4 +117,62 @@ export function resolveApiKey(providerId: string, envVar?: string): string | nul
   }
 
   return null;
+}
+
+export function buildProviderBaseUrl(
+  catalog: CatalogProvider,
+  values: Record<string, string>,
+): string {
+  if (catalog.id === "azure") {
+    return normalizeAzureBaseUrl(values.baseUrl || values.endpoint || "");
+  }
+
+  return trimTrailingSlash(values.baseUrl || catalog.baseUrl);
+}
+
+export function providerEntryValues(entry: ProviderEntry | null): Record<string, string> {
+  if (!entry) return {};
+  return {
+    ...(entry.config ?? {}),
+    ...(entry.apiKey ? { apiKey: entry.apiKey } : {}),
+    ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
+  };
+}
+
+export function resolveProviderConfig(
+  providerId: string,
+): {
+  baseUrl: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  type: ProviderEntry["type"];
+} | null {
+  const catalog = getCatalogProvider(providerId);
+  const saved = getProviderEntry(providerId);
+  if (!catalog && !saved) return null;
+
+  return {
+    baseUrl: saved?.baseUrl ?? catalog?.baseUrl ?? "",
+    apiKey:
+      saved?.apiKey ??
+      (catalog?.envVar ? process.env[catalog.envVar] : undefined) ??
+      undefined,
+    headers: saved?.headers,
+    type: saved?.type ?? catalog?.type ?? "openai-compatible",
+  };
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function normalizeAzureBaseUrl(value: string): string {
+  const baseUrl = trimTrailingSlash(value);
+  if (!baseUrl) return "";
+  if (baseUrl.includes("/openai/deployments/") && baseUrl.includes("/chat/completions")) {
+    return baseUrl;
+  }
+  if (baseUrl.endsWith("/openai/v1")) return baseUrl;
+  if (baseUrl.endsWith("/openai")) return `${baseUrl}/v1`;
+  return `${baseUrl}/openai/v1`;
 }

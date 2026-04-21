@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { saveGlobalConfig } from "../../config";
 import { createContextStore } from "../../context/store";
 import { readLock, removeLock } from "./lock";
 import { startUi, stopUi } from "./lifecycle";
@@ -53,10 +54,55 @@ describe("API", () => {
 
   test("GET /api/providers lists catalog", async () => {
     const res = await fetch(`${baseUrl}/api/providers`);
-    const body = (await res.json()) as { ok: boolean; providers: unknown[] };
+    const body = (await res.json()) as {
+      ok: boolean;
+      providers: Array<{
+        id: string;
+        supported: boolean;
+        fields?: Array<{ key: string; required: boolean }>;
+      }>;
+    };
     expect(body.ok).toBe(true);
     expect(Array.isArray(body.providers)).toBe(true);
     expect(body.providers.length).toBeGreaterThan(0);
+    expect(body.providers.find((provider) => provider.id === "azure")?.fields?.map((field) => field.key)).toEqual([
+      "baseUrl",
+      "apiKey",
+    ]);
+    expect(body.providers.find((provider) => provider.id === "bedrock")?.supported).toBe(false);
+  });
+
+  test("GET /api/providers marks placeholder Azure config as not configured", async () => {
+    const save = saveGlobalConfig({
+      providers: {
+        azure: {
+          id: "azure",
+          name: "Azure OpenAI",
+          apiKey: "secret",
+          baseUrl: "https://{resource}.openai.azure.com/openai/deployments/{deployment}",
+          type: "openai-compatible",
+          addedAt: new Date().toISOString(),
+        },
+      },
+    });
+    expect(save.ok).toBe(true);
+
+    const res = await fetch(`${baseUrl}/api/providers`);
+    const body = (await res.json()) as {
+      ok: boolean;
+      providers: Array<{
+        id: string;
+        configured: boolean;
+        fields?: Array<{ key: string; configured: boolean }>;
+      }>;
+    };
+    const azure = body.providers.find((provider) => provider.id === "azure");
+    expect(body.ok).toBe(true);
+    expect(azure?.configured).toBe(false);
+    expect(azure?.fields?.find((field) => field.key === "baseUrl")?.configured).toBe(false);
+
+    const clear = saveGlobalConfig({ providers: {} });
+    expect(clear.ok).toBe(true);
   });
 
   test("GET and PUT /api/settings use real UI config", async () => {

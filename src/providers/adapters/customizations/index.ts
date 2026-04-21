@@ -13,6 +13,7 @@
 
 import type { ProviderProtocol } from "../provider-protocol";
 import { anthropicProtocol } from "./anthropic";
+import { azureProtocol } from "./azure";
 import { defaultProtocol } from "./default";
 import { ollamaProtocol } from "./ollama";
 import { openaiProtocol } from "./openai";
@@ -20,6 +21,7 @@ import { openaiProtocol } from "./openai";
 const protocolRegistry: Record<string, ProviderProtocol> = {
   openai: openaiProtocol,
   anthropic: anthropicProtocol,
+  azure: azureProtocol,
   ollama: ollamaProtocol,
 };
 
@@ -34,4 +36,5 @@ export function getProtocol(providerName: string): ProviderProtocol {
 export { defaultProtocol } from "./default";
 export { openaiProtocol } from "./openai";
 export { anthropicProtocol } from "./anthropic";
+export { azureProtocol } from "./azure";
 export { ollamaProtocol } from "./ollama";

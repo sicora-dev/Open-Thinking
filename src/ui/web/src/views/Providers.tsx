@@ -38,15 +38,26 @@ export function Providers() {
   }, [pushToast]);
 
   const onRemove = async (id: string) => {
-    if (!confirm("Remove this API key?")) return;
+    if (!confirm("Remove this provider configuration?")) return;
     try {
       await api.removeProvider(id);
-      pushToast({ kind: "success", title: "Provider key removed" });
+      pushToast({ kind: "success", title: "Provider removed" });
       load();
     } catch (e) {
       const message = (e as Error).message;
       setError(message);
       pushToast({ kind: "error", title: "Could not remove provider key", description: message });
+    }
+  };
+
+  const onCheck = async (id: string) => {
+    try {
+      await api.checkProvider(id);
+      pushToast({ kind: "success", title: "Provider check passed" });
+      load();
+    } catch (e) {
+      const message = (e as Error).message;
+      pushToast({ kind: "error", title: "Provider check failed", description: message });
     }
   };
 
@@ -86,7 +97,7 @@ export function Providers() {
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
           {providers.map((p) => (
-            <ProviderCard key={p.id} provider={p} onEdit={setEditing} onRemove={onRemove} />
+            <ProviderCard key={p.id} provider={p} onEdit={setEditing} onRemove={onRemove} onCheck={onCheck} />
           ))}
         </div>
       )}
@@ -98,7 +109,7 @@ export function Providers() {
           onSaved={() => {
             setEditing(null);
             load();
-            pushToast({ kind: "success", title: "Provider key saved" });
+            pushToast({ kind: "success", title: "Provider configured" });
           }}
         />
       )}
@@ -110,11 +121,21 @@ function ProviderCard({
   provider: p,
   onEdit,
   onRemove,
+  onCheck,
 }: {
   provider: ProviderInfo;
   onEdit: (p: ProviderInfo) => void;
   onRemove: (id: string) => void;
+  onCheck: (id: string) => void;
 }) {
+  const statusLabel = !p.supported ? "unsupported" : p.configured ? "configured" : "not configured";
+  const statusColor = !p.supported ? "var(--warn)" : p.configured ? "var(--ok)" : "var(--fg-dim)";
+  const statusBg = !p.supported
+    ? "rgba(245,158,11,0.08)"
+    : p.configured
+      ? "rgba(16,185,129,0.08)"
+      : "var(--bg-soft)";
+
   return (
     <div style={{
       background: "var(--bg-card)", border: "1px solid var(--border)",
@@ -139,12 +160,12 @@ function ProviderCard({
         </div>
         <span style={{
           fontSize: 11, padding: "2px 8px", borderRadius: 10,
-          background: p.configured ? "rgba(16,185,129,0.08)" : "var(--bg-soft)",
-          color: p.configured ? "var(--ok)" : "var(--fg-dim)",
+          background: statusBg,
+          color: statusColor,
           display: "flex", alignItems: "center", gap: 4,
         }}>
           <span style={{ width: 5, height: 5, borderRadius: 3, background: "currentColor" }} />
-          {p.configured ? "configured" : "not configured"}
+          {statusLabel}
         </span>
       </div>
 
@@ -161,15 +182,30 @@ function ProviderCard({
         {p.baseUrl}
       </div>
 
+      <div style={{ fontSize: 11.5, color: "var(--fg-muted)", marginBottom: 12 }}>
+        Requires: {p.fields.filter((field) => field.required).map((field) => field.label).join(", ") || "No credentials"}
+      </div>
+
       {/* Actions */}
       <div style={{ display: "flex", gap: 6 }}>
         <button
           type="button"
           onClick={() => onEdit(p)}
-          style={{ ...btnGhost, flex: 1, justifyContent: "center" }}
+          disabled={!p.supported}
+          style={{ ...btnGhost, flex: 1, justifyContent: "center", opacity: p.supported ? 1 : 0.55 }}
         >
-          {p.configured ? "Update key" : "Add key"}
+          {p.configured ? "Update" : "Configure"}
         </button>
+        {p.configured && (
+          <button
+            type="button"
+            onClick={() => onCheck(p.id)}
+            style={btnGhost}
+            title="Check connection"
+          >
+            {Icons.refresh}
+          </button>
+        )}
         {p.configured && (
           <button
             type="button"
@@ -194,18 +230,42 @@ function KeyModal({
   onSaved: () => void;
 }) {
   const { pushToast } = useToast();
-  const [key, setKey] = useState("");
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      provider.fields.map((field) => [
+        field.key,
+        field.secret ? "" : provider.values[field.key] ?? field.defaultValue ?? "",
+      ]),
+    ),
+  );
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const updateValue = (key: string, value: string) => {
+    setValues((current) => ({ ...current, [key]: value }));
+  };
 
   const save = async () => {
-    if (!key.trim()) return setError("Key is required.");
+    for (const field of provider.fields) {
+      if (!field.required) continue;
+      if (field.secret && field.configured && !values[field.key]?.trim()) continue;
+      if (!values[field.key]?.trim()) {
+        setError(`${field.label} is required.`);
+        return;
+      }
+    }
+
+    setBusy(true);
+    setError(null);
     try {
-      await api.saveProvider(provider.id, key.trim());
+      await api.saveProvider(provider.id, values);
       onSaved();
     } catch (e) {
       const message = (e as Error).message;
       setError(message);
-      pushToast({ kind: "error", title: "Could not save provider key", description: message });
+      pushToast({ kind: "error", title: "Provider check failed", description: message });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -233,7 +293,7 @@ function KeyModal({
           padding: "12px 16px", borderBottom: "1px solid var(--border)",
           display: "flex", alignItems: "center", justifyContent: "space-between",
         }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>{provider.name} API key</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Configure {provider.name}</div>
           <button
             type="button"
             onClick={onClose}
@@ -247,20 +307,38 @@ function KeyModal({
         </div>
 
         {/* Body */}
-        <div style={{ padding: 16 }}>
-          <input
-            type="password"
-            placeholder="sk-..."
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            style={{
-              width: "100%", padding: "8px 12px",
-              background: "var(--bg-soft)", border: "1px solid var(--border)",
-              borderRadius: "var(--r-md)", fontSize: 13,
-              fontFamily: "var(--font-mono)", color: "var(--fg)",
-              outline: "none",
-            }}
-          />
+        <div style={{ padding: 16, display: "grid", gap: 12 }}>
+          {provider.fields.map((field) => (
+            <div key={field.key}>
+              <label className="label block mb-1">
+                {field.label}
+                {field.required ? "" : " (optional)"}
+              </label>
+              <input
+                type={field.type}
+                placeholder={
+                  field.secret && field.configured
+                    ? "Already configured - leave blank to keep"
+                    : field.placeholder ?? field.defaultValue
+                }
+                value={values[field.key] ?? ""}
+                onChange={(e) => updateValue(field.key, e.target.value)}
+                disabled={busy}
+                style={{
+                  width: "100%", padding: "8px 12px",
+                  background: "var(--bg-soft)", border: "1px solid var(--border)",
+                  borderRadius: "var(--r-md)", fontSize: 13,
+                  fontFamily: field.secret ? "var(--font-mono)" : "inherit", color: "var(--fg)",
+                  outline: "none",
+                }}
+              />
+              {field.help && (
+                <div style={{ fontSize: 11.5, color: "var(--fg-dim)", marginTop: 5 }}>
+                  {field.help}
+                </div>
+              )}
+            </div>
+          ))}
           {provider.signupUrl && (
             <div style={{ fontSize: 11.5, color: "var(--fg-dim)", marginTop: 8 }}>
               Get a key at{" "}
@@ -299,14 +377,16 @@ function KeyModal({
           <button
             type="button"
             onClick={save}
+            disabled={busy}
             style={{
               padding: "6px 14px", background: "var(--cyan-500)",
               border: "none", borderRadius: "var(--r-sm)",
-              fontSize: 13, color: "#fff", fontWeight: 500, cursor: "pointer",
+              fontSize: 13, color: "#fff", fontWeight: 500, cursor: busy ? "default" : "pointer",
               fontFamily: "inherit",
+              opacity: busy ? 0.7 : 1,
             }}
           >
-            Save
+            {busy ? "Checking..." : "Save and check"}
           </button>
         </div>
       </div>

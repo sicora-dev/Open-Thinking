@@ -217,8 +217,19 @@ async function healthCheck(ctx: ProtocolContext): Promise<Result<boolean>> {
       }),
       signal: AbortSignal.timeout(10_000),
     });
-    // 200 or 400 (bad request but auth works) both count as healthy
-    return ok(response.status !== 401 && response.status !== 403);
+    // 200 or 400 (bad request but auth works) both count as healthy.
+    if (response.ok || response.status === 400) return ok(true);
+
+    const body = await response.text().catch(() => "");
+    const code = response.status === 401 || response.status === 403 ? "AUTH_ERROR" : "API_ERROR";
+    return err(
+      new ProviderError(
+        `Anthropic check failed: ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`,
+        code,
+        response.status,
+        ctx.providerName,
+      ),
+    );
   } catch {
     return ok(false);
   }

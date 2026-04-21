@@ -23,7 +23,7 @@
 
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
-import { getCatalogProvider, resolveApiKey } from "../../config";
+import { getCatalogProvider, resolveApiKey, resolveProviderConfig } from "../../config";
 import { PipelineError } from "../../shared/errors";
 import { type Result, err, ok, tryCatchAsync } from "../../shared/result";
 import type { PipelineConfig, PipelineMode, ResolvedProvider } from "../../shared/types";
@@ -88,12 +88,16 @@ function resolveProviders(
           );
         }
 
-        const apiKey = resolveKeys ? resolveApiKey(catalog.id, catalog.envVar) : undefined;
+        const savedConfig = resolveKeys ? resolveProviderConfig(catalog.id) : null;
+        const apiKey = resolveKeys
+          ? (savedConfig?.apiKey ?? resolveApiKey(catalog.id, catalog.envVar))
+          : undefined;
 
         resolved[item] = {
-          type: catalog.type,
-          base_url: catalog.baseUrl,
+          type: savedConfig?.type ?? catalog.type,
+          base_url: savedConfig?.baseUrl ?? catalog.baseUrl,
           api_key: apiKey ?? undefined,
+          headers: savedConfig?.headers,
         };
       } else if (typeof item === "object" && item !== null) {
         // Custom provider object: { id: "my-custom", base_url: "..." }
@@ -107,8 +111,9 @@ function resolveProviders(
 
         // Check if it's a known catalog provider with overrides
         const catalog = getCatalogProvider(id);
-        const baseUrl = (obj.base_url as string) ?? catalog?.baseUrl;
-        const type = (obj.type as ResolvedProvider["type"]) ?? catalog?.type ?? "openai-compatible";
+        const savedConfig = resolveKeys ? resolveProviderConfig(id) : null;
+        const baseUrl = (obj.base_url as string) ?? savedConfig?.baseUrl ?? catalog?.baseUrl;
+        const type = (obj.type as ResolvedProvider["type"]) ?? savedConfig?.type ?? catalog?.type ?? "openai-compatible";
 
         if (!baseUrl) {
           return err(
@@ -120,14 +125,14 @@ function resolveProviders(
 
         let apiKey = obj.api_key as string | undefined;
         if (!apiKey && resolveKeys) {
-          apiKey = resolveApiKey(id, catalog?.envVar) ?? undefined;
+          apiKey = savedConfig?.apiKey ?? resolveApiKey(id, catalog?.envVar) ?? undefined;
         }
 
         resolved[id] = {
           type,
           base_url: baseUrl,
           api_key: apiKey,
-          headers: obj.headers as Record<string, string> | undefined,
+          headers: (obj.headers as Record<string, string> | undefined) ?? savedConfig?.headers,
           rate_limit_rpm: obj.rate_limit_rpm as number | undefined,
         };
       }
@@ -142,11 +147,15 @@ function resolveProviders(
         // Bare key with no value: treat as catalog lookup
         const catalog = getCatalogProvider(name);
         if (catalog) {
-          const apiKey = resolveKeys ? resolveApiKey(catalog.id, catalog.envVar) : undefined;
+          const savedConfig = resolveKeys ? resolveProviderConfig(catalog.id) : null;
+          const apiKey = resolveKeys
+            ? (savedConfig?.apiKey ?? resolveApiKey(catalog.id, catalog.envVar))
+            : undefined;
           resolved[name] = {
-            type: catalog.type,
-            base_url: catalog.baseUrl,
+            type: savedConfig?.type ?? catalog.type,
+            base_url: savedConfig?.baseUrl ?? catalog.baseUrl,
             api_key: apiKey ?? undefined,
+            headers: savedConfig?.headers,
           };
         } else {
           return err(new PipelineError(`Unknown provider "${name}"`, "VALIDATION_ERROR"));

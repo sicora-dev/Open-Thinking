@@ -13,7 +13,46 @@ export type CatalogProvider = {
   category: "cloud" | "local";
   requiresKey: boolean;
   signupUrl?: string;
+  supported?: boolean;
+  configFields: CatalogProviderField[];
 };
+
+export type CatalogProviderField = {
+  key: string;
+  label: string;
+  type: "text" | "password" | "url";
+  required: boolean;
+  secret?: boolean;
+  placeholder?: string;
+  help?: string;
+  defaultValue?: string;
+};
+
+const apiKeyField = (envVar: string): CatalogProviderField => ({
+  key: "apiKey",
+  label: "API key",
+  type: "password",
+  required: true,
+  secret: true,
+  placeholder: envVar,
+});
+
+const baseUrlField = (baseUrl: string): CatalogProviderField => ({
+  key: "baseUrl",
+  label: "Base URL",
+  type: "url",
+  required: true,
+  defaultValue: baseUrl,
+});
+
+const requiredBaseUrlField = (placeholder: string, help?: string): CatalogProviderField => ({
+  key: "baseUrl",
+  label: "Base URL",
+  type: "url",
+  required: true,
+  placeholder,
+  help,
+});
 
 export const PROVIDER_CATALOG: CatalogProvider[] = [
   // ─── Major Cloud Providers ──────────────────────────────────
@@ -27,6 +66,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://platform.openai.com/api-keys",
+    configFields: [apiKeyField("OPENAI_API_KEY")],
   },
   {
     id: "anthropic",
@@ -38,6 +78,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://console.anthropic.com/settings/keys",
+    configFields: [apiKeyField("ANTHROPIC_API_KEY")],
   },
   {
     id: "google",
@@ -49,6 +90,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://aistudio.google.com/apikey",
+    configFields: [apiKeyField("GOOGLE_API_KEY")],
   },
   {
     id: "mistral",
@@ -60,6 +102,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://console.mistral.ai/api-keys",
+    configFields: [apiKeyField("MISTRAL_API_KEY")],
   },
   {
     id: "xai",
@@ -71,6 +114,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://console.x.ai",
+    configFields: [apiKeyField("XAI_API_KEY")],
   },
   {
     id: "deepseek",
@@ -82,6 +126,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://platform.deepseek.com/api_keys",
+    configFields: [apiKeyField("DEEPSEEK_API_KEY")],
   },
 
   // ─── Inference Platforms ─────────────────────────────────────
@@ -95,6 +140,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://console.groq.com/keys",
+    configFields: [apiKeyField("GROQ_API_KEY")],
   },
   {
     id: "together",
@@ -106,6 +152,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://api.together.ai/settings/api-keys",
+    configFields: [apiKeyField("TOGETHER_API_KEY")],
   },
   {
     id: "fireworks",
@@ -117,6 +164,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://fireworks.ai/api-keys",
+    configFields: [apiKeyField("FIREWORKS_API_KEY")],
   },
   {
     id: "openrouter",
@@ -128,6 +176,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://openrouter.ai/keys",
+    configFields: [apiKeyField("OPENROUTER_API_KEY")],
   },
   {
     id: "perplexity",
@@ -139,29 +188,38 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://www.perplexity.ai/settings/api",
+    configFields: [apiKeyField("PERPLEXITY_API_KEY")],
   },
   {
     id: "cohere",
     name: "Cohere",
-    baseUrl: "https://api.cohere.com/v2",
+    baseUrl: "https://api.cohere.ai/compatibility/v1",
     type: "openai-compatible",
     envVar: "COHERE_API_KEY",
     description: "Command R+, Command R, Embed",
     category: "cloud",
     requiresKey: true,
     signupUrl: "https://dashboard.cohere.com/api-keys",
+    configFields: [apiKeyField("COHERE_API_KEY")],
   },
 
   // ─── Cloud Infrastructure ───────────────────────────────────
   {
     id: "azure",
     name: "Azure OpenAI",
-    baseUrl: "https://{resource}.openai.azure.com/openai/deployments/{deployment}",
+    baseUrl: "https://{resource}.openai.azure.com/openai/v1",
     type: "openai-compatible",
     envVar: "AZURE_OPENAI_API_KEY",
     description: "OpenAI models via Azure — enterprise grade",
     category: "cloud",
     requiresKey: true,
+    configFields: [
+      requiredBaseUrlField(
+        "https://my-resource.openai.azure.com/openai/v1",
+        "Use the Azure OpenAI v1 base URL. Stage model names remain configurable per pipeline.",
+      ),
+      apiKeyField("AZURE_OPENAI_API_KEY"),
+    ],
   },
   {
     id: "bedrock",
@@ -172,6 +230,34 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     description: "Claude, Llama, Titan via AWS",
     category: "cloud",
     requiresKey: true,
+    supported: false,
+    configFields: [
+      { key: "region", label: "Region", type: "text", required: true, placeholder: "us-east-1" },
+      {
+        key: "accessKeyId",
+        label: "Access key ID",
+        type: "text",
+        required: true,
+        secret: true,
+        placeholder: "AWS_ACCESS_KEY_ID",
+      },
+      {
+        key: "secretAccessKey",
+        label: "Secret access key",
+        type: "password",
+        required: true,
+        secret: true,
+        placeholder: "AWS_SECRET_ACCESS_KEY",
+      },
+      {
+        key: "sessionToken",
+        label: "Session token",
+        type: "password",
+        required: false,
+        secret: true,
+        placeholder: "AWS_SESSION_TOKEN",
+      },
+    ],
   },
 
   // ─── Local Inference ────────────────────────────────────────
@@ -184,6 +270,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     description: "Local models — Llama, Qwen, Mistral, Gemma",
     category: "local",
     requiresKey: false,
+    configFields: [baseUrlField("http://localhost:11434")],
   },
   {
     id: "lmstudio",
@@ -194,6 +281,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     description: "Local models with GUI — any GGUF model",
     category: "local",
     requiresKey: false,
+    configFields: [baseUrlField("http://localhost:1234/v1")],
   },
   {
     id: "llamacpp",
@@ -204,6 +292,7 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     description: "Lightweight local inference server",
     category: "local",
     requiresKey: false,
+    configFields: [baseUrlField("http://localhost:8080/v1")],
   },
 ];
 

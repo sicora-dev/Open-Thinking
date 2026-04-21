@@ -47,14 +47,20 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   PROVIDER_CATALOG,
   addProvider,
+  buildProviderBaseUrl,
+  getProviderEntry,
   listProviders,
   loadOpenthkConfig,
+  providerEntryValues,
   removeProvider as removeGlobalProvider,
   saveOpenthkConfig,
+  type CatalogProvider,
+  type ProviderEntry,
 } from "../../config";
 import { getOpenthkConfigDir } from "../../config/paths";
 import { createContextStore } from "../../context/store";
 import { parsePipeline, parsePipelineFromString } from "../../pipeline/parser";
+import { createProviderFromConfig } from "../../providers";
 import { getProjectDir, initProjectWorkspace, pipelineNameFromFilename } from "../../workspace";
 import {
   type PipelineIndexEntry,
@@ -231,6 +237,141 @@ function buildProjectSummary(project: ProjectIndexEntry) {
     pipelinesCount: listProjectPipelinesForUi(project).length,
     skillsCount: listProjectSkillsForUi(project).length,
   };
+}
+
+type ProviderSaveBody = {
+  id: string;
+  apiKey?: string;
+  values?: Record<string, string>;
+};
+
+function getProviderPublicValues(
+  catalog: CatalogProvider,
+  entry: ProviderEntry | null,
+): Record<string, string> {
+  const values = providerEntryValues(entry);
+  const publicValues: Record<string, string> = {};
+  for (const field of catalog.configFields) {
+    if (field.secret) continue;
+    const value = values[field.key] ?? field.defaultValue ?? "";
+    if (value) publicValues[field.key] = value;
+  }
+  return publicValues;
+}
+
+function mergeProviderValues(
+  catalog: CatalogProvider,
+  entry: ProviderEntry | null,
+  input: Record<string, string>,
+): Record<string, string> {
+  const current = providerEntryValues(entry);
+  const merged: Record<string, string> = {};
+
+  for (const field of catalog.configFields) {
+    const raw = input[field.key];
+    const nextValue = typeof raw === "string" ? raw.trim() : "";
+    const currentValue = current[field.key] ?? "";
+    const defaultValue = field.defaultValue ?? "";
+    merged[field.key] = nextValue || (field.secret ? currentValue : currentValue || defaultValue);
+  }
+
+  return merged;
+}
+
+function validateProviderValues(
+  catalog: CatalogProvider,
+  values: Record<string, string>,
+): string | null {
+  if (catalog.supported === false) {
+    return `${catalog.name} is not supported by the current provider adapter.`;
+  }
+
+  for (const field of catalog.configFields) {
+    if (field.required && !values[field.key]) {
+      return `${field.label} is required.`;
+    }
+  }
+
+  if (catalog.id === "azure") {
+    const baseUrl = buildProviderBaseUrl(catalog, values);
+    if (!/^https:\/\/[^/]+/.test(baseUrl)) {
+      return "Azure base URL must be an https URL.";
+    }
+    if (baseUrl.includes("{") || baseUrl.includes("}")) {
+      return "Azure base URL must use your real resource name.";
+    }
+    if (baseUrl.includes("api-version=") && baseUrl.includes("/openai/v1")) {
+      return "Azure v1 base URLs must not include api-version.";
+    }
+  }
+
+  return null;
+}
+
+function isProviderConfigured(catalog: CatalogProvider, entry: ProviderEntry | null): boolean {
+  if (!entry || catalog.supported === false) return false;
+  const values = providerEntryValues(entry);
+  return validateProviderValues(catalog, values) === null;
+}
+
+function isProviderFieldConfigured(
+  catalog: CatalogProvider,
+  entry: ProviderEntry | null,
+  fieldKey: string,
+): boolean {
+  if (!entry) return false;
+  const value = providerEntryValues(entry)[fieldKey] ?? "";
+  if (!value) return false;
+  if (catalog.id === "azure" && fieldKey === "baseUrl") {
+    return !value.includes("{") && !value.includes("}");
+  }
+  return true;
+}
+
+function buildProviderEntry(
+  catalog: CatalogProvider,
+  values: Record<string, string>,
+  existing: ProviderEntry | null,
+): ProviderEntry {
+  const baseUrl = buildProviderBaseUrl(catalog, values);
+  const config: Record<string, string> = {};
+  for (const field of catalog.configFields) {
+    if (field.key === "apiKey" || field.key === "baseUrl") continue;
+    const value = values[field.key];
+    if (value) config[field.key] = value;
+  }
+
+  return {
+    id: catalog.id,
+    name: catalog.name,
+    apiKey: values.apiKey || undefined,
+    baseUrl,
+    type: catalog.type,
+    config,
+    addedAt: existing?.addedAt ?? new Date().toISOString(),
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function checkProviderConnection(entry: ProviderEntry): Promise<{ ok: true } | { ok: false; error: string }> {
+  const created = createProviderFromConfig(entry.id, {
+    type: entry.type,
+    base_url: entry.baseUrl,
+    api_key: entry.apiKey,
+    headers: entry.headers,
+  });
+  if (!created.ok) return { ok: false, error: created.error.message };
+
+  const health = await created.value.healthCheck();
+  if (!health.ok) return { ok: false, error: health.error.message };
+  if (!health.value) {
+    return {
+      ok: false,
+      error: "Provider check failed. Verify the endpoint and credentials.",
+    };
+  }
+
+  return { ok: true };
 }
 
 export async function handleRequest(req: Request, port: number): Promise<Response> {
@@ -716,34 +857,63 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     const configured = new Map(listProviders().map((p) => [p.id, p]));
     return json({
       ok: true,
-      providers: PROVIDER_CATALOG.map((c) => ({
-        id: c.id,
-        name: c.name,
-        baseUrl: c.baseUrl,
-        type: c.type,
-        category: c.category,
-        description: c.description,
-        signupUrl: c.signupUrl,
-        requiresKey: c.requiresKey,
-        configured: configured.has(c.id),
-      })),
+      providers: PROVIDER_CATALOG.map((c) => {
+        const entry = configured.get(c.id) ?? null;
+        const isConfigured = isProviderConfigured(c, entry);
+        return {
+          id: c.id,
+          name: c.name,
+          baseUrl: entry?.baseUrl ?? c.baseUrl,
+          type: c.type,
+          category: c.category,
+          description: c.description,
+          signupUrl: c.signupUrl,
+          requiresKey: c.requiresKey,
+          configured: isConfigured,
+          supported: c.supported !== false,
+          fields: c.configFields.map((field) => ({
+            ...field,
+            configured: isProviderFieldConfigured(c, entry, field.key),
+          })),
+          values: getProviderPublicValues(c, entry),
+          checkedAt: entry?.checkedAt ?? null,
+        };
+      }),
     });
   }
 
   if (method === "POST" && pathname === "/api/providers") {
-    const body = await readJsonBody<{ id: string; apiKey: string }>(req);
-    if (!body?.id || !body?.apiKey) return badRequest("`id` and `apiKey` required");
+    const body = await readJsonBody<ProviderSaveBody>(req);
+    if (!body?.id) return badRequest("`id` is required");
     const catalog = PROVIDER_CATALOG.find((p) => p.id === body.id);
     if (!catalog) return badRequest(`Unknown provider: ${body.id}`);
-    const result = addProvider({
-      id: catalog.id,
-      name: catalog.name,
-      apiKey: body.apiKey,
-      baseUrl: catalog.baseUrl,
-      type: catalog.type,
-      addedAt: new Date().toISOString(),
-    });
+
+    const existing = getProviderEntry(catalog.id);
+    const inputValues = { ...(body.values ?? {}) };
+    if (body.apiKey) inputValues.apiKey = body.apiKey;
+    const values = mergeProviderValues(catalog, existing, inputValues);
+    const validationError = validateProviderValues(catalog, values);
+    if (validationError) return badRequest(validationError);
+
+    const entry = buildProviderEntry(catalog, values, existing);
+    const check = await checkProviderConnection(entry);
+    if (!check.ok) return badRequest(check.error);
+
+    const result = addProvider(entry);
     if (!result.ok) return serverError(result.error.message);
+    return json({ ok: true, checkedAt: entry.checkedAt });
+  }
+
+  const providerCheckParams = match(pathname, "/api/providers/:id/check");
+  if (providerCheckParams && method === "POST") {
+    const catalog = PROVIDER_CATALOG.find((p) => p.id === (providerCheckParams.id ?? ""));
+    if (!catalog) return notFound("Provider not found");
+    const existing = getProviderEntry(catalog.id);
+    if (!existing) return badRequest("Provider is not configured");
+    const validationError = validateProviderValues(catalog, providerEntryValues(existing));
+    if (validationError) return badRequest(validationError);
+    const check = await checkProviderConnection(existing);
+    if (!check.ok) return badRequest(check.error);
     return json({ ok: true });
   }
 

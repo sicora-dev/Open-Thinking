@@ -3,11 +3,15 @@ export {
   saveGlobalConfig,
   addProvider,
   removeProvider,
+  getProviderEntry,
   getProviderApiKey,
   listProviders,
   hasAnyProviders,
   getConfigDir,
   resolveApiKey,
+  buildProviderBaseUrl,
+  providerEntryValues,
+  resolveProviderConfig,
 } from "./global-config";
 export type { ProviderEntry, GlobalConfig } from "./global-config";
 export { PROVIDER_CATALOG, getCatalogProvider } from "./provider-catalog";
