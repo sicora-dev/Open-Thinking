@@ -2,13 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/ToastProvider";
+import { ContextStore } from "./views/ContextStore";
 import { Dashboard } from "./views/Dashboard";
+import { Files } from "./views/Files";
+import { History } from "./views/History";
+import { Logs } from "./views/Logs";
 import { RunPipeline } from "./views/RunPipeline";
+import { Settings } from "./views/Settings";
 import { Pipelines } from "./views/Pipelines";
 import { PipelineEditor } from "./views/PipelineEditor";
 import { Projects } from "./views/Projects";
 import { ProjectDetail } from "./views/ProjectDetail";
-import { Runs } from "./views/Runs";
+
 import { RunDetail } from "./views/RunDetail";
 import { Providers } from "./views/Providers";
 import { Skills } from "./views/Skills";
@@ -58,32 +63,6 @@ function routeToActive(route: Route): string {
   return route.name;
 }
 
-function PlaceholderView({ title }: { title: string }) {
-  return (
-    <div
-      style={{
-        padding: "48px 28px",
-        maxWidth: 600,
-        margin: "0 auto",
-        textAlign: "center",
-      }}
-    >
-      <h2
-        style={{
-          fontSize: 20,
-          fontWeight: 600,
-          color: "var(--fg)",
-          marginBottom: 8,
-        }}
-      >
-        {title}
-      </h2>
-      <p style={{ fontSize: 14, color: "var(--fg-muted)" }}>
-        This view is coming soon.
-      </p>
-    </div>
-  );
-}
 
 export default function App() {
   const [route, setRoute] = useState<Route>(parseHash());
@@ -127,14 +106,14 @@ export default function App() {
         )}
         {route.name === "projects" && <Projects />}
         {route.name === "project" && <ProjectDetail projectId={route.id} />}
-        {route.name === "runs" && <Runs />}
+        {route.name === "runs" && <History />}
         {route.name === "runDetail" && <RunDetail runId={route.id} />}
         {route.name === "providers" && <Providers />}
         {route.name === "skills" && <Skills />}
-        {route.name === "context" && <PlaceholderView title="Context Store" />}
-        {route.name === "files" && <PlaceholderView title="Workspace Files" />}
-        {route.name === "logs" && <PlaceholderView title="Logs" />}
-        {route.name === "settings" && <PlaceholderView title="Settings" />}
+        {route.name === "context" && <ContextStore />}
+        {route.name === "files" && <Files />}
+        {route.name === "logs" && <Logs />}
+        {route.name === "settings" && <Settings />}
       </Layout>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </ToastProvider>
