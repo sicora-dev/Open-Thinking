@@ -1,7 +1,21 @@
 import { useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
+import { Icons } from "../components/Icons";
 import { useToast } from "../components/ToastProvider";
 import { api, type ProviderInfo } from "../lib/api";
+
+const btnGhost: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "5px 10px",
+  background: "var(--bg-card)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--r-sm)",
+  cursor: "pointer",
+  fontSize: 12.5,
+  color: "var(--fg)",
+  fontFamily: "inherit",
+};
 
 export function Providers() {
   const { pushToast } = useToast();
@@ -36,16 +50,31 @@ export function Providers() {
     }
   };
 
-  const cloud = providers.filter((p) => p.category === "cloud");
-  const local = providers.filter((p) => p.category === "local");
-
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <p className="text-xs text-ink-400 mb-5">
-        Keys stored at <code className="text-ink-300">~/.openthk/providers.json</code>
-      </p>
+    <div style={{ padding: "24px 28px 60px", maxWidth: 1280, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.3, margin: 0 }}>Providers</h1>
+          <p style={{ fontSize: 13, color: "var(--fg-muted)", margin: "4px 0 0" }}>
+            API keys stored in <span className="mono">~/.openthk/providers.json</span> &middot; shared across projects.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" style={btnGhost} onClick={load}>
+            {Icons.refresh}<span style={{ marginLeft: 6 }}>Refresh</span>
+          </button>
+        </div>
+      </div>
 
-      {error && <div className="panel p-3 text-red-400 text-sm mb-4">{error}</div>}
+      {error && (
+        <div style={{
+          padding: 12, marginBottom: 16, background: "rgba(239,68,68,0.08)",
+          border: "1px solid rgba(239,68,68,0.2)", borderRadius: "var(--r-md)",
+          fontSize: 13, color: "var(--err)",
+        }}>
+          {error}
+        </div>
+      )}
 
       {providers.length === 0 ? (
         <div className="panel">
@@ -55,11 +84,11 @@ export function Providers() {
           />
         </div>
       ) : (
-        <>
-          <Section title="Cloud" providers={cloud} onEdit={setEditing} onRemove={onRemove} />
-          <div className="h-6" />
-          <Section title="Local" providers={local} onEdit={setEditing} onRemove={onRemove} />
-        </>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
+          {providers.map((p) => (
+            <ProviderCard key={p.id} provider={p} onEdit={setEditing} onRemove={onRemove} />
+          ))}
+        </div>
       )}
 
       {editing && (
@@ -77,54 +106,79 @@ export function Providers() {
   );
 }
 
-function Section({
-  title,
-  providers,
+function ProviderCard({
+  provider: p,
   onEdit,
   onRemove,
 }: {
-  title: string;
-  providers: ProviderInfo[];
+  provider: ProviderInfo;
   onEdit: (p: ProviderInfo) => void;
   onRemove: (id: string) => void;
 }) {
   return (
-    <div>
-      <div className="label mb-3">{title}</div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {providers.map((p) => (
-          <div
-            key={p.id}
-            className={`card p-4 flex items-start justify-between gap-3 ${p.configured ? "border-accent/30" : ""}`}
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-sm text-ink-100">{p.name}</span>
-                {p.configured && (
-                  <span className="badge badge-accent">
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-                    configured
-                  </span>
-                )}
-              </div>
-              <div className="text-xs text-ink-400 mt-1 line-clamp-2">{p.description}</div>
-              <div className="text-[11px] text-ink-500 font-mono mt-1.5 truncate">{p.baseUrl}</div>
-            </div>
-            <div className="flex flex-col gap-1 shrink-0">
-              <button className="btn-ghost !px-2.5 !py-1 !text-xs" onClick={() => onEdit(p)}>
-                {p.configured ? "Update" : "Add key"}
-              </button>
-              {p.configured && (
-                <button
-                  className="btn-ghost !px-2.5 !py-1 !text-xs hover:!text-red-400"
-                  onClick={() => onRemove(p.id)}
-                >
-                  Remove
-                </button>
-              )}
-            </div>
+    <div style={{
+      background: "var(--bg-card)", border: "1px solid var(--border)",
+      borderRadius: "var(--r-lg)", padding: 16,
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <div style={{
+          width: 32, height: 32, borderRadius: "var(--r-sm)",
+          background: "var(--bg-soft)", border: "1px solid var(--border)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 12, fontWeight: 600, color: "var(--fg-muted)",
+          fontFamily: "var(--font-mono)",
+        }}>
+          {p.name.slice(0, 2).toUpperCase()}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</div>
+          <div className="mono" style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+            {p.id} &middot; {p.category}
           </div>
-        ))}
+        </div>
+        <span style={{
+          fontSize: 11, padding: "2px 8px", borderRadius: 10,
+          background: p.configured ? "rgba(16,185,129,0.08)" : "var(--bg-soft)",
+          color: p.configured ? "var(--ok)" : "var(--fg-dim)",
+          display: "flex", alignItems: "center", gap: 4,
+        }}>
+          <span style={{ width: 5, height: 5, borderRadius: 3, background: "currentColor" }} />
+          {p.configured ? "configured" : "not configured"}
+        </span>
+      </div>
+
+      {/* Description */}
+      <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 10, lineHeight: 1.4 }}>
+        {p.description}
+      </div>
+
+      {/* Base URL */}
+      <div className="mono" style={{
+        fontSize: 11, color: "var(--fg-dim)", marginBottom: 12,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>
+        {p.baseUrl}
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          type="button"
+          onClick={() => onEdit(p)}
+          style={{ ...btnGhost, flex: 1, justifyContent: "center" }}
+        >
+          {p.configured ? "Update key" : "Add key"}
+        </button>
+        {p.configured && (
+          <button
+            type="button"
+            onClick={() => onRemove(p.id)}
+            style={btnGhost}
+          >
+            {Icons.trash}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -156,42 +210,102 @@ function KeyModal({
   };
 
   return (
-    <div className="fixed inset-0 z-40 overlay-scrim flex items-center justify-center p-6">
-      <div className="panel w-full max-w-md">
-        <div className="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
-          <div className="text-sm font-medium">{provider.name} API key</div>
-          <button className="text-ink-400 hover:text-ink-100 text-sm" onClick={onClose}>
-            ✕
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 50,
+        background: "rgba(0,0,0,0.35)", backdropFilter: "blur(4px)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 440,
+          background: "var(--bg-card)", border: "1px solid var(--border)",
+          borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-lg)",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          padding: "12px 16px", borderBottom: "1px solid var(--border)",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{provider.name} API key</div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              border: "none", background: "transparent",
+              color: "var(--fg-muted)", cursor: "pointer", padding: 2,
+            }}
+          >
+            {Icons.x}
           </button>
         </div>
-        <div className="p-4 space-y-3">
+
+        {/* Body */}
+        <div style={{ padding: 16 }}>
           <input
-            className="input font-mono"
             type="password"
             placeholder="sk-..."
             value={key}
             onChange={(e) => setKey(e.target.value)}
+            style={{
+              width: "100%", padding: "8px 12px",
+              background: "var(--bg-soft)", border: "1px solid var(--border)",
+              borderRadius: "var(--r-md)", fontSize: 13,
+              fontFamily: "var(--font-mono)", color: "var(--fg)",
+              outline: "none",
+            }}
           />
           {provider.signupUrl && (
-            <div className="text-[11px] text-ink-400">
+            <div style={{ fontSize: 11.5, color: "var(--fg-dim)", marginTop: 8 }}>
               Get a key at{" "}
               <a
-                className="text-accent hover:underline"
                 href={provider.signupUrl}
                 target="_blank"
                 rel="noreferrer"
+                style={{ color: "var(--cyan-600)", textDecoration: "none" }}
               >
                 {provider.signupUrl}
               </a>
             </div>
           )}
-          {error && <div className="text-red-400 text-xs">{error}</div>}
+          {error && (
+            <div style={{ fontSize: 12, color: "var(--err)", marginTop: 8 }}>{error}</div>
+          )}
         </div>
-        <div className="px-4 py-3 border-t border-ink-700 flex justify-end gap-2">
-          <button className="btn" onClick={onClose}>
+
+        {/* Footer */}
+        <div style={{
+          padding: "12px 16px", borderTop: "1px solid var(--border)",
+          display: "flex", justifyContent: "flex-end", gap: 8,
+        }}>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: "6px 14px", background: "var(--bg-card)",
+              border: "1px solid var(--border)", borderRadius: "var(--r-sm)",
+              fontSize: 13, color: "var(--fg)", cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
             Cancel
           </button>
-          <button className="btn-accent" onClick={save}>
+          <button
+            type="button"
+            onClick={save}
+            style={{
+              padding: "6px 14px", background: "var(--cyan-500)",
+              border: "none", borderRadius: "var(--r-sm)",
+              fontSize: 13, color: "#fff", fontWeight: 500, cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
             Save
           </button>
         </div>
