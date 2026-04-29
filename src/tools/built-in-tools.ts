@@ -342,6 +342,7 @@ export function createRunCommandTool(
           maxBuffer: MAX_COMMAND_OUTPUT,
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
+          shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
         });
         const filtered = filterCommandOutput(command, output);
         session.fsEpoch += 1;
