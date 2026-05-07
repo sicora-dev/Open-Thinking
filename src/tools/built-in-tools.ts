@@ -86,7 +86,10 @@ export function createReadFileTool(
       required: ["path"],
     },
     async execute(args) {
-      const filePath = args.path as string;
+      const filePath = args.path;
+      if (typeof filePath !== "string" || filePath.trim().length === 0) {
+        return err(new Error("read_file requires a non-empty string 'path'"));
+      }
       const offset = typeof args.offset === "number" ? Math.max(1, Math.floor(args.offset)) : 1;
       const limitArg =
         typeof args.limit === "number" ? Math.floor(args.limit) : READ_FILE_MAX_LINES;
@@ -170,8 +173,14 @@ export function createWriteFileTool(
       required: ["path", "content"],
     },
     async execute(args) {
-      const filePath = args.path as string;
-      const content = args.content as string;
+      const filePath = args.path;
+      if (typeof filePath !== "string" || filePath.trim().length === 0) {
+        return err(new Error("write_file requires a non-empty string 'path'"));
+      }
+      const content = args.content;
+      if (typeof content !== "string") {
+        return err(new Error("write_file requires a string 'content'"));
+      }
       const resolved = safePath(workingDir, filePath);
       if (!resolved) return err(new Error(`Path traversal blocked: ${filePath}`));
 
@@ -202,7 +211,11 @@ export function createListFilesTool(
       },
     },
     async execute(args) {
-      const dirPath = (args.path as string) ?? ".";
+      const pathArg = args.path;
+      if (pathArg !== undefined && typeof pathArg !== "string") {
+        return err(new Error("list_files expects 'path' to be a string when provided"));
+      }
+      const dirPath = pathArg ?? ".";
       const recursive = (args.recursive as boolean) ?? false;
       const resolved = safePath(workingDir, dirPath);
       if (!resolved) return err(new Error(`Path traversal blocked: ${dirPath}`));
@@ -332,7 +345,10 @@ export function createRunCommandTool(
       required: ["command"],
     },
     async execute(args) {
-      const command = args.command as string;
+      const command = args.command;
+      if (typeof command !== "string" || command.trim().length === 0) {
+        return err(new Error("run_command requires a non-empty string 'command'"));
+      }
       const timeout = (args.timeout_ms as number) ?? DEFAULT_COMMAND_TIMEOUT;
 
       try {
@@ -380,8 +396,15 @@ export function createSearchFilesTool(workingDir: string): ToolFunction {
       required: ["pattern"],
     },
     async execute(args) {
-      const pattern = args.pattern as string;
-      const searchPath = (args.path as string) ?? ".";
+      const pattern = args.pattern;
+      if (typeof pattern !== "string" || pattern.trim().length === 0) {
+        return err(new Error("search_files requires a non-empty string 'pattern'"));
+      }
+      const pathArg = args.path;
+      if (pathArg !== undefined && typeof pathArg !== "string") {
+        return err(new Error("search_files expects 'path' to be a string when provided"));
+      }
+      const searchPath = pathArg ?? ".";
       const globFilter = args.glob as string | undefined;
       const resolved = safePath(workingDir, searchPath);
       if (!resolved) return err(new Error(`Path traversal blocked: ${searchPath}`));

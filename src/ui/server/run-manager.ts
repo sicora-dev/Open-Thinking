@@ -11,8 +11,8 @@
  * from the existing CLI run command — this is just the orchestration layer
  * that makes it usable from HTTP.
  */
-import { dirname, join } from "node:path";
-import { getOpenthkConfigDir } from "../../config/paths";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
 import { executePipeline } from "../../pipeline/executor";
@@ -155,7 +155,39 @@ export async function startRun(
     emitRunEvent(runState, evt.type, evt);
   });
 
-  const workingDir = inputArgs.workspace?.path ?? (inputArgs.entry.rootPath || dirname(inputArgs.entry.path));
+  if (!inputArgs.workspace) {
+    return err(
+      new Error(
+        "Workspace is required for UI runs. Select a project workspace before starting the pipeline.",
+      ),
+    );
+  }
+
+  if (
+    inputArgs.entry.scope === "project" &&
+    inputArgs.entry.projectId &&
+    inputArgs.workspace.projectId !== inputArgs.entry.projectId
+  ) {
+    return err(
+      new Error(
+        "Project pipelines must run in their own project workspace.",
+      ),
+    );
+  }
+
+  const workspacePath = inputArgs.workspace.path;
+  if (!workspacePath || !isAbsolute(workspacePath)) {
+    return err(new Error("Workspace path must be an absolute path."));
+  }
+
+  const workingDir = resolve(workspacePath);
+  if (!existsSync(workingDir)) {
+    return err(new Error(`Workspace path does not exist: ${workingDir}`));
+  }
+  if (!statSync(workingDir).isDirectory()) {
+    return err(new Error(`Workspace path is not a directory: ${workingDir}`));
+  }
+
   const contextStore = createContextStore({
     dbPath: hasProjectWorkspace(workingDir)
       ? join(getProjectDir(workingDir), "context.db")
@@ -163,10 +195,7 @@ export async function startRun(
   });
   await contextStore.set("input.prompt", inputArgs.input, "user");
 
-  const skillsDir =
-    inputArgs.workspace || inputArgs.entry.scope === "project"
-      ? getProjectSkillsDir(workingDir)
-      : join(getOpenthkConfigDir(), "skills");
+  const skillsDir = getProjectSkillsDir(workingDir);
 
   // Run in the background — do NOT await before returning.
   (async () => {

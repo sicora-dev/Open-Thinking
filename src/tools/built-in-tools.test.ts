@@ -38,6 +38,12 @@ describe("read_file", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("returns error for missing path argument", async () => {
+    const result = await tool.execute({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("requires a non-empty string 'path'");
+  });
+
   test("blocks path traversal", async () => {
     const result = await tool.execute({ path: "../../etc/passwd" });
     expect(result.ok).toBe(false);
@@ -72,6 +78,12 @@ describe("write_file", () => {
     const result = await tool.execute({ path: "../escape.txt", content: "bad" });
     expect(result.ok).toBe(false);
   });
+
+  test("returns error for missing path argument", async () => {
+    const result = await tool.execute({ content: "missing path" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("requires a non-empty string 'path'");
+  });
 });
 
 describe("list_files", () => {
@@ -101,6 +113,12 @@ describe("list_files", () => {
     expect(second.ok).toBe(true);
     if (second.ok) expect(second.value).toContain("[cached:");
   });
+
+  test("returns error for non-string path argument", async () => {
+    const result = await tool.execute({ path: 123 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("expects 'path' to be a string");
+  });
 });
 
 describe("run_command", () => {
@@ -116,6 +134,12 @@ describe("run_command", () => {
     const result = await tool.execute({ command: "false" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toContain("Exit code:");
+  });
+
+  test("returns error for missing command argument", async () => {
+    const result = await tool.execute({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("requires a non-empty string 'command'");
   });
 });
 
@@ -141,6 +165,12 @@ describe("search_files", () => {
     const result = await tool.execute({ pattern: "42", glob: "*.ts" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toContain("index.ts");
+  });
+
+  test("returns error for missing pattern argument", async () => {
+    const result = await tool.execute({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("requires a non-empty string 'pattern'");
   });
 });
 

@@ -245,6 +245,35 @@ stages:
     });
   });
 
+  test("POST /api/pipelines/:id/run requires an explicit workspace for global pipelines", async () => {
+    const createPipeline = await fetch(`${baseUrl}/api/pipelines`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "workspace-required",
+        content: "name: workspace-required\nversion: \"0.1.0\"\nmode: sequential\nproviders: []\nstages: {}\n",
+      }),
+    });
+    expect(createPipeline.status).toBe(201);
+    const pipelineBody = (await createPipeline.json()) as {
+      pipeline: { id: string };
+    };
+
+    const run = await fetch(`${baseUrl}/api/pipelines/${pipelineBody.pipeline.id}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "hello" }),
+    });
+    expect(run.status).toBe(400);
+    const runBody = (await run.json()) as { ok: boolean; error?: string };
+    expect(runBody.ok).toBe(false);
+    expect(runBody.error).toContain("Select a workspace");
+
+    await fetch(`${baseUrl}/api/pipelines/${pipelineBody.pipeline.id}`, {
+      method: "DELETE",
+    });
+  });
+
   test("projects endpoint registers a project and creates project-local pipelines", async () => {
     const projectDir = join(tmp, "sample-project");
     mkdirSync(projectDir, { recursive: true });

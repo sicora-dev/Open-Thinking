@@ -644,6 +644,8 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
       const project = getIndexedProject(body.projectId);
       if (!project) return notFound("Project not registered");
       workspace = { projectId: project.id, path: project.path };
+    } else {
+      return badRequest("Select a workspace before starting the run.");
     }
 
     const result = await startRun({ entry, input: body.input, workspace });
