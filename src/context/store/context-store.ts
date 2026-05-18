@@ -2,11 +2,20 @@
  * SQLite-backed context store with namespaced keys, TTL, and policy-aware access.
  * Uses bun:sqlite in Bun-powered development/tests and better-sqlite3 in the
  * published Node CLI so installs from npm, pnpm, or bun all work.
+ *
+ * Entries larger than COMPRESSION_THRESHOLD are transparently compressed with
+ * gzip to reduce storage and context-window cost for long-running pipelines.
  */
 import { createRequire } from "node:module";
 import { ContextError } from "../../shared/errors";
 import { type Result, err, ok } from "../../shared/result";
 import type { ContextEntry, ContextStore } from "../../shared/types";
+import {
+  type CompressionStats,
+  computeCompressionStats,
+  maybeCompress,
+  maybeDecompress,
+} from "./compression";
 
 type SQLiteStatement = {
   get(params?: Record<string, unknown>): unknown;
@@ -118,7 +127,7 @@ type Row = {
 function rowToEntry(row: Row): ContextEntry {
   return {
     key: row.key,
-    value: row.value,
+    value: maybeDecompress(row.value),
     createdBy: row.created_by,
     createdAt: new Date(row.created_at),
     expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
@@ -133,6 +142,7 @@ function isExpired(row: Row): boolean {
 export function createContextStore(config: ContextStoreConfig): ContextStore & {
   inspect(): Result<ContextEntry[]>;
   purgeExpired(): Result<number>;
+  compressionStats(): Result<CompressionStats>;
   close(): void;
   /** Save a snapshot of the current context state. */
   saveSnapshot(name: string, createdBy: string, description?: string): Result<ContextSnapshot>;
@@ -177,9 +187,10 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
     try {
       const now = new Date().toISOString();
       const expiresAt = defaultTtlMs ? new Date(Date.now() + defaultTtlMs).toISOString() : null;
+      const { stored } = maybeCompress(value);
       stmtUpsert.run({
         $key: key,
-        $value: value,
+        $value: stored,
         $created_by: createdBy,
         $created_at: now,
         $expires_at: expiresAt,
@@ -253,7 +264,7 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
       const rows = stmtListAll.all() as Row[];
       const entries = rows.filter((r) => !isExpired(r)).map((r) => ({
         key: r.key,
-        value: r.value,
+        value: maybeDecompress(r.value),
         createdBy: r.created_by,
       }));
 
@@ -287,9 +298,10 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
       stmtClear.run();
       const now = new Date().toISOString();
       for (const entry of entries) {
+        const { stored } = maybeCompress(entry.value);
         stmtUpsert.run({
           $key: entry.key,
-          $value: entry.value,
+          $value: stored,
           $created_by: entry.createdBy,
           $created_at: now,
           $expires_at: defaultTtlMs ? new Date(Date.now() + defaultTtlMs).toISOString() : null,
@@ -347,6 +359,19 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
     }
   }
 
+  function compressionStats(): Result<CompressionStats> {
+    try {
+      const rows = stmtListAll.all() as Row[];
+      const pairs = rows.map((row) => ({
+        stored: row.value,
+        raw: maybeDecompress(row.value),
+      }));
+      return ok(computeCompressionStats(pairs));
+    } catch (e) {
+      return err(new ContextError(e instanceof Error ? e.message : String(e), "READ_ERROR"));
+    }
+  }
+
   function close(): void {
     db.close();
   }
@@ -359,6 +384,7 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
     clear,
     inspect,
     purgeExpired,
+    compressionStats,
     close,
     saveSnapshot,
     restoreSnapshot,

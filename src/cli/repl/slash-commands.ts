@@ -698,8 +698,8 @@ const commands: SlashCommand[] = [
   {
     name: "context",
     aliases: ["ctx"],
-    description: "Manage context: inspect, clear, save/restore snapshots",
-    usage: "[inspect|clear|save <name>|restore <id>|snapshots|delete-snapshot <id>]",
+    description: "Manage context: inspect, clear, stats, save/restore snapshots",
+    usage: "[inspect|clear|stats|save <name>|restore <id>|snapshots|delete-snapshot <id>]",
     async execute(args, state) {
       const parts = args.trim().split(/\s+/);
       const sub = parts[0] || "inspect";
@@ -722,6 +722,21 @@ const commands: SlashCommand[] = [
       const store = createContextStore({ dbPath });
 
       try {
+        if (sub === "stats") {
+          const result = store.compressionStats();
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          const stats = result.value;
+          return {
+            output:
+              "  Context compression:\n" +
+              `    Entries: ${stats.totalEntries} (${stats.compressedEntries} compressed)\n` +
+              `    Raw bytes: ${stats.totalRawBytes}\n` +
+              `    Stored bytes: ${stats.totalStoredBytes}\n` +
+              `    Saved bytes: ${stats.savedBytes}\n` +
+              `    Ratio: ${(stats.ratio * 100).toFixed(1)}%`,
+          };
+        }
+
         if (sub === "save") {
           const name = parts.slice(1).join(" ") || `manual-${new Date().toISOString().slice(0, 19)}`;
           const result = store.saveSnapshot(name, "user");
@@ -758,7 +773,7 @@ const commands: SlashCommand[] = [
           return { output: result.value ? `  Deleted snapshot ${id}.` : `  Snapshot not found: ${id}` };
         }
 
-        return { output: `  Unknown: /context ${sub}. Use inspect, clear, save, restore, snapshots, or delete-snapshot.` };
+        return { output: `  Unknown: /context ${sub}. Use inspect, clear, stats, save, restore, snapshots, or delete-snapshot.` };
       } finally {
         store.close();
       }

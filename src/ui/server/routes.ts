@@ -29,6 +29,7 @@
  *   POST   /api/context/snapshots               — save a snapshot
  *   POST   /api/context/snapshots/restore       — restore from a snapshot
  *   DELETE /api/context/snapshots/:id           — delete a snapshot
+ *   GET    /api/context/stats                   — compression statistics
  *   GET    /api/providers                       — catalog + key status
  *   POST   /api/providers                       — add/update API key
  *   DELETE /api/providers/:id                   — remove key
@@ -1011,6 +1012,36 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     } finally {
       store.close();
     }
+  }
+
+  // ── Context stats (compression) ──────────────────────
+  if (method === "GET" && pathname === "/api/context/stats") {
+    const projectId = url.searchParams.get("projectId");
+    const projects = projectId
+      ? [getIndexedProject(projectId)].filter((project): project is ProjectIndexEntry => project != null)
+      : listIndexedProjects();
+
+    if (projectId && projects.length === 0) return notFound("Project not registered");
+
+    const stats = [];
+    for (const project of projects) {
+      const dbPath = join(getProjectDir(project.path), "context.db");
+      if (!existsSync(dbPath)) {
+        stats.push({ projectId: project.id, projectName: project.name, exists: false });
+        continue;
+      }
+
+      const store = createContextStore({ dbPath });
+      try {
+        const result = store.compressionStats();
+        if (!result.ok) return serverError(result.error.message);
+        stats.push({ projectId: project.id, projectName: project.name, exists: true, ...result.value });
+      } finally {
+        store.close();
+      }
+    }
+
+    return json({ ok: true, stats });
   }
 
   // ── Providers ──────────────────────────────────────────
