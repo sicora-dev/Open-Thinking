@@ -697,14 +697,17 @@ const commands: SlashCommand[] = [
   {
     name: "context",
     aliases: ["ctx"],
-    description: "Inspect or clear the context store",
-    usage: "[inspect|clear]",
+    description: "Inspect, clear, or show stats for the context store",
+    usage: "[inspect|clear|stats]",
     async execute(args) {
       const sub = args.trim() || "inspect";
       if (sub === "inspect" || sub === "clear") {
         return { output: `  Context ${sub}: available during pipeline execution.` };
       }
-      return { output: `  Unknown: /context ${sub}. Use inspect or clear.` };
+      if (sub === "stats") {
+        return { output: "  Context stats: available during pipeline execution." };
+      }
+      return { output: `  Unknown: /context ${sub}. Use inspect, clear, or stats.` };
     },
   },
   {

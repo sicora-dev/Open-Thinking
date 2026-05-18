@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createContextStore } from "./context-store";
+import { COMPRESSION_THRESHOLD } from "./compression";
 
 type Store = ReturnType<typeof createContextStore>;
 
@@ -137,5 +138,66 @@ describe("ContextStore", () => {
     const inspectResult = expiring.inspect();
     if (inspectResult.ok) expect(inspectResult.value).toHaveLength(0);
     expiring.close();
+  });
+
+  // ── Compression tests ─────────────────────────────────────
+
+  test("large values are compressed transparently on set/get", async () => {
+    const large = "context data ".repeat(1000);
+    expect(large.length).toBeGreaterThan(COMPRESSION_THRESHOLD);
+
+    await store.set("big.data", large, "stage");
+
+    const result = await store.get("big.data");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value?.value).toBe(large);
+  });
+
+  test("large values are decompressed in list()", async () => {
+    const large = "list test data ".repeat(800);
+    await store.set("compressed.item", large, "stage");
+    await store.set("small.item", "hello", "stage");
+
+    const result = await store.list();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(2);
+
+    const bigEntry = result.value.find((e) => e.key === "compressed.item");
+    expect(bigEntry?.value).toBe(large);
+  });
+
+  test("large values are decompressed in inspect()", async () => {
+    const large = "inspect data ".repeat(800);
+    await store.set("inspected", large, "stage");
+
+    const result = store.inspect();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const entry = result.value.find((e) => e.key === "inspected");
+    expect(entry?.value).toBe(large);
+  });
+
+  test("compressionStats returns correct statistics", async () => {
+    const large = "compressible ".repeat(800);
+    await store.set("big", large, "stage");
+    await store.set("small", "tiny", "stage");
+
+    const stats = store.compressionStats();
+    expect(stats.ok).toBe(true);
+    if (!stats.ok) return;
+    expect(stats.value.totalEntries).toBe(2);
+    expect(stats.value.compressedEntries).toBe(1);
+    expect(stats.value.savedBytes).toBeGreaterThan(0);
+    expect(stats.value.ratio).toBeLessThan(1);
+  });
+
+  test("compressionStats on empty store", async () => {
+    const stats = store.compressionStats();
+    expect(stats.ok).toBe(true);
+    if (!stats.ok) return;
+    expect(stats.value.totalEntries).toBe(0);
+    expect(stats.value.ratio).toBe(1);
   });
 });
