@@ -205,6 +205,9 @@ export function getAzureProtocolForBaseUrl(baseUrl: string): ProviderProtocol {
   if (baseUrl.includes("/openai/deployments/") && baseUrl.includes("/chat/completions")) {
     return azureDeploymentProtocol;
   }
+  if (baseUrl.replace(/\/+$/, "").endsWith("/openai/v1")) {
+    return azureV1Protocol;
+  }
   if (baseUrl.includes(".openai.azure.com")) {
     return azureClassicDynamicProtocol;
   }
