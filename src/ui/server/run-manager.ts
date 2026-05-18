@@ -15,6 +15,8 @@ import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
+import { createPermissionEngine } from "../../core/permissions";
+import type { PermissionMode } from "../../core/permissions";
 import { executePipeline } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
@@ -42,6 +44,7 @@ type ActiveRun = {
   seq: number;
   startedAtMs: number;
   subscribers: Set<(evt: RunEvent) => void>;
+  permissionEngine?: import("../../core/permissions").PermissionEngine;
 };
 
 const active = new Map<string, ActiveRun>();
@@ -62,6 +65,42 @@ export function cancelRun(runId: string): boolean {
   if (!a) return false;
   a.controller.abort();
   return true;
+}
+
+/**
+ * Resolve a pending permission request for an active run.
+ * Returns true if the request was found and resolved.
+ */
+export function resolvePermission(
+  runId: string,
+  requestId: string,
+  action: "allow" | "deny",
+  remember: boolean,
+): boolean {
+  const a = active.get(runId);
+  if (!a?.permissionEngine) return false;
+  return a.permissionEngine.confirmations().resolve(requestId, { action, remember });
+}
+
+/**
+ * List pending permission requests for an active run.
+ */
+export function listPendingPermissions(runId: string): Array<{
+  id: string;
+  tool: string;
+  risk: string;
+  description: string;
+  subject: string;
+}> {
+  const a = active.get(runId);
+  if (!a?.permissionEngine) return [];
+  return a.permissionEngine.confirmations().pending().map((p) => ({
+    id: p.request.id,
+    tool: p.request.tool,
+    risk: p.request.risk,
+    description: p.request.description,
+    subject: p.request.subject,
+  }));
 }
 
 function emitRunEvent(run: ActiveRun, type: string, payload: unknown): void {
@@ -197,6 +236,15 @@ export async function startRun(
 
   const skillsDir = getProjectSkillsDir(workingDir);
 
+  // Create permission engine for this run (UI resolves via POST /api/runs/:id/permission)
+  const permissionMode: PermissionMode = (config.permissions as PermissionMode) ?? "confirm";
+  const permissionEngine = createPermissionEngine({
+    mode: permissionMode,
+    workingDir,
+    eventBus,
+  });
+  runState.permissionEngine = permissionEngine;
+
   // Run in the background — do NOT await before returning.
   (async () => {
     try {
@@ -209,6 +257,7 @@ export async function startRun(
         workingDir,
         skillsDir,
         signal: controller.signal,
+        permissionEngine,
       });
 
       if (!result.ok) {

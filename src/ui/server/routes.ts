@@ -20,6 +20,8 @@
  *   GET    /api/runs/:id                        — single run + summary
  *   GET    /api/runs/:id/stream                 — SSE event stream
  *   POST   /api/runs/:id/cancel                 — abort
+ *   POST   /api/runs/:id/permission             — resolve a pending permission request
+ *   GET    /api/runs/:id/permissions            — list pending permission requests
  *   GET    /api/context                         — inspect project context stores
  *   GET    /api/providers                       — catalog + key status
  *   POST   /api/providers                       — add/update API key
@@ -31,6 +33,10 @@
  *   GET    /api/skills/content                  — load a skill prompt + manifest
  *   PUT    /api/skills/content                  — save a skill prompt + manifest
  *   DELETE /api/skills/content                  — delete a skill folder
+ *   GET    /api/permissions                      — list permission rules
+ *   PUT    /api/permissions                      — add/update a permission rule
+ *   DELETE /api/permissions                      — remove permission rule(s)
+ *   DELETE /api/permissions/all                  — clear all rules
  *   GET    /api/fs/browse                       — directory listing for path picker
  */
 import {
@@ -83,7 +89,7 @@ import {
   getRunEvents,
   listRuns,
 } from "./runs-store";
-import { startRun, cancelRun, subscribeRun, isRunActive } from "./run-manager";
+import { startRun, cancelRun, subscribeRun, isRunActive, resolvePermission, listPendingPermissions } from "./run-manager";
 import {
   createSkillInRoot,
   deleteSkillDocument,
@@ -803,6 +809,29 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     return json({ ok: ok2 });
   }
 
+  // POST /api/runs/:id/permission — resolve a pending permission request
+  const runPermParams = match(pathname, "/api/runs/:id/permission");
+  if (runPermParams && method === "POST") {
+    const body = await readJsonBody<{ requestId: string; action: "allow" | "deny"; remember?: boolean }>(req);
+    if (!body?.requestId || !body?.action) {
+      return badRequest("`requestId` and `action` are required");
+    }
+    const resolved = resolvePermission(
+      runPermParams.id ?? "",
+      body.requestId,
+      body.action,
+      body.remember ?? false,
+    );
+    return json({ ok: resolved });
+  }
+
+  // GET /api/runs/:id/permissions — list pending permission requests
+  const runPermsParams = match(pathname, "/api/runs/:id/permissions");
+  if (runPermsParams && method === "GET") {
+    const pending = listPendingPermissions(runPermsParams.id ?? "");
+    return json({ ok: true, pending });
+  }
+
   // ── Context stores ─────────────────────────────────────
   if (method === "GET" && pathname === "/api/context") {
     const projectId = url.searchParams.get("projectId");
@@ -1070,6 +1099,41 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     } catch (e) {
       return badRequest((e as Error).message);
     }
+  }
+
+  // ── Permissions ─────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/permissions") {
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    return json({ ok: true, rules: store.listRules() });
+  }
+
+  if (method === "PUT" && pathname === "/api/permissions") {
+    const body = await readJsonBody<{ tool: string; pattern: string; action: "allow" | "deny" }>(req);
+    if (!body || !body.tool || !body.pattern || !body.action) {
+      return badRequest("`tool`, `pattern`, and `action` are required");
+    }
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    store.addRule(body.tool, body.pattern, body.action);
+    return json({ ok: true });
+  }
+
+  if (method === "DELETE" && pathname === "/api/permissions") {
+    const tool = url.searchParams.get("tool");
+    const pattern = url.searchParams.get("pattern") ?? undefined;
+    if (!tool) return badRequest("`tool` query parameter is required");
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    const count = store.removeRule(tool, pattern);
+    return json({ ok: true, removed: count });
+  }
+
+  if (method === "DELETE" && pathname === "/api/permissions/all") {
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    store.clearRules();
+    return json({ ok: true });
   }
 
   // ── FS browse ──────────────────────────────────────────

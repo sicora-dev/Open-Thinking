@@ -7,6 +7,8 @@ import * as readline from "node:readline";
 import { checkFirstRun, listProviders } from "../../config";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
+import { createPermissionEngine } from "../../core/permissions";
+import type { PermissionMode } from "../../core/permissions";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
@@ -156,6 +158,54 @@ async function executePipelinePrompt(
     : ":memory:";
   const contextStore = createContextStore({ dbPath });
   const eventBus = createEventBus();
+
+  // Create permission engine (resolve mode: CLI flag > pipeline YAML > default "confirm")
+  const permissionMode: PermissionMode = (config.permissions as PermissionMode) ?? "confirm";
+  const permissionEngine = createPermissionEngine({
+    mode: permissionMode,
+    workingDir: state.workingDir,
+    eventBus,
+  });
+
+  // Wire interactive confirmation prompts for permission requests
+  eventBus.on("permission:request", (e) => {
+    if (e.type !== "permission:request") return;
+    const { request } = e;
+    const riskColor = request.risk === "dangerous" ? COLORS.red : request.risk === "moderate" ? COLORS.yellow : COLORS.green;
+    console.log();
+    console.log(`  ${riskColor}[${request.risk}]${COLORS.reset} ${request.description}`);
+    console.log(`  ${c("dim", "(y)es / (n)o / (a)llow always / (d)eny always")}`);
+
+    // Read a single key from stdin for the confirmation
+    const onData = (data: Buffer) => {
+      const key = data.toString().trim().toLowerCase();
+      let action: "allow" | "deny" = "allow";
+      let remember = false;
+
+      if (key === "y" || key === "yes" || key === "") {
+        action = "allow";
+      } else if (key === "n" || key === "no") {
+        action = "deny";
+      } else if (key === "a") {
+        action = "allow";
+        remember = true;
+      } else if (key === "d") {
+        action = "deny";
+        remember = true;
+      } else {
+        return; // Ignore unrecognized keys, wait for valid input
+      }
+
+      process.stdin.removeListener("data", onData);
+      process.stdin.setRawMode?.(false);
+      permissionEngine.confirmations().resolve(request.id, { action, remember });
+    };
+
+    process.stdin.setRawMode?.(true);
+    process.stdin.resume();
+    process.stdin.on("data", onData);
+  });
+
   const meter = createTokenMeter({ eventBus });
   const tracker = createPersistedRunTracker({
     eventBus,
@@ -327,6 +377,7 @@ async function executePipelinePrompt(
       skillsDir,
       signal: abortController?.signal,
       onTokenLimit,
+      permissionEngine,
     });
   } finally {
     meter.stop();
