@@ -300,6 +300,12 @@ async function executeStage(
     };
   }
 
+  // Auto-snapshot context before this stage runs, so it can be rolled back
+  if ("saveSnapshot" in contextStore) {
+    const store = contextStore as ReturnType<typeof import("../../context/store").createContextStore>;
+    store.saveSnapshot(`auto:before:${stageName}`, "system", `Auto-snapshot before stage "${stageName}"`);
+  }
+
   // Seed lazy persistent context (learned + history) into the context store
   // so the agent can fetch it via get_context. This must happen *before*
   // we build the context payload so the keys appear in the index.

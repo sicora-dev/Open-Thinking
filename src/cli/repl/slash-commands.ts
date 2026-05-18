@@ -698,14 +698,70 @@ const commands: SlashCommand[] = [
   {
     name: "context",
     aliases: ["ctx"],
-    description: "Inspect or clear the context store",
-    usage: "[inspect|clear]",
-    async execute(args) {
-      const sub = args.trim() || "inspect";
+    description: "Manage context: inspect, clear, save/restore snapshots",
+    usage: "[inspect|clear|save <name>|restore <id>|snapshots|delete-snapshot <id>]",
+    async execute(args, state) {
+      const parts = args.trim().split(/\s+/);
+      const sub = parts[0] || "inspect";
+
       if (sub === "inspect" || sub === "clear") {
         return { output: `  Context ${sub}: available during pipeline execution.` };
       }
-      return { output: `  Unknown: /context ${sub}. Use inspect or clear.` };
+
+      // Snapshot operations need a context store — only available with a project workspace
+      const { existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const projectDir = getProjectDir(state.workingDir);
+      const dbPath = join(projectDir, "context.db");
+
+      if (!existsSync(dbPath)) {
+        return { output: "  No context store found. Run a pipeline first to create one." };
+      }
+
+      const { createContextStore } = await import("../../context/store");
+      const store = createContextStore({ dbPath });
+
+      try {
+        if (sub === "save") {
+          const name = parts.slice(1).join(" ") || `manual-${new Date().toISOString().slice(0, 19)}`;
+          const result = store.saveSnapshot(name, "user");
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          return { output: `  Saved snapshot "${result.value.name}" (${result.value.entryCount} entries, id: ${result.value.id})` };
+        }
+
+        if (sub === "restore") {
+          const id = parts[1];
+          if (!id) return { output: "  Usage: /context restore <snapshot-id>" };
+          const result = store.restoreSnapshot(id);
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          return { output: `  Restored ${result.value.restored} entries from snapshot.` };
+        }
+
+        if (sub === "snapshots" || sub === "ls") {
+          const result = store.listSnapshots();
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          if (result.value.length === 0) {
+            return { output: "  No snapshots. Use /context save <name> to create one." };
+          }
+          const lines = result.value.map((s) => {
+            const desc = s.description ? ` — ${s.description}` : "";
+            return `    ${s.id}  ${s.name}  (${s.entryCount} entries, ${s.createdAt.slice(0, 19)})${desc}`;
+          });
+          return { output: `  Snapshots:\n${lines.join("\n")}` };
+        }
+
+        if (sub === "delete-snapshot" || sub === "rm-snapshot") {
+          const id = parts[1];
+          if (!id) return { output: "  Usage: /context delete-snapshot <snapshot-id>" };
+          const result = store.deleteSnapshot(id);
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          return { output: result.value ? `  Deleted snapshot ${id}.` : `  Snapshot not found: ${id}` };
+        }
+
+        return { output: `  Unknown: /context ${sub}. Use inspect, clear, save, restore, snapshots, or delete-snapshot.` };
+      } finally {
+        store.close();
+      }
     },
   },
   {

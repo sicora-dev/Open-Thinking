@@ -23,6 +23,10 @@
  *   POST   /api/runs/:id/permission             — resolve a pending permission request
  *   GET    /api/runs/:id/permissions            — list pending permission requests
  *   GET    /api/context                         — inspect project context stores
+ *   GET    /api/context/snapshots               — list snapshots for a project
+ *   POST   /api/context/snapshots               — save a snapshot
+ *   POST   /api/context/snapshots/restore       — restore from a snapshot
+ *   DELETE /api/context/snapshots/:id           — delete a snapshot
  *   GET    /api/providers                       — catalog + key status
  *   POST   /api/providers                       — add/update API key
  *   DELETE /api/providers/:id                   — remove key
@@ -881,6 +885,87 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     }
 
     return json({ ok: true, stores });
+  }
+
+  // ── Context snapshots ────────────────────────────────────
+  if (method === "GET" && pathname === "/api/context/snapshots") {
+    const projectId = url.searchParams.get("projectId");
+    if (!projectId) return badRequest("`projectId` is required");
+    const project = getIndexedProject(projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return json({ ok: true, snapshots: [] });
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.listSnapshots();
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, snapshots: result.value });
+    } finally {
+      store.close();
+    }
+  }
+
+  if (method === "POST" && pathname === "/api/context/snapshots") {
+    const body = await readJsonBody<{ projectId: string; name: string; description?: string }>(req);
+    if (!body?.projectId || !body?.name) return badRequest("`projectId` and `name` are required");
+
+    const project = getIndexedProject(body.projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return badRequest("No context store for this project");
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.saveSnapshot(body.name, "ui", body.description);
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, snapshot: result.value });
+    } finally {
+      store.close();
+    }
+  }
+
+  if (method === "POST" && pathname === "/api/context/snapshots/restore") {
+    const body = await readJsonBody<{ projectId: string; snapshotId: string }>(req);
+    if (!body?.projectId || !body?.snapshotId) return badRequest("`projectId` and `snapshotId` are required");
+
+    const project = getIndexedProject(body.projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return badRequest("No context store for this project");
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.restoreSnapshot(body.snapshotId);
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, restored: result.value.restored });
+    } finally {
+      store.close();
+    }
+  }
+
+  const snapshotDeleteParams = match(pathname, "/api/context/snapshots/:id");
+  if (snapshotDeleteParams && method === "DELETE") {
+    const projectId = url.searchParams.get("projectId");
+    if (!projectId) return badRequest("`projectId` query parameter is required");
+
+    const project = getIndexedProject(projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return badRequest("No context store for this project");
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.deleteSnapshot(snapshotDeleteParams.id ?? "");
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, deleted: result.value });
+    } finally {
+      store.close();
+    }
   }
 
   // ── Providers ──────────────────────────────────────────

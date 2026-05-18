@@ -138,4 +138,108 @@ describe("ContextStore", () => {
     if (inspectResult.ok) expect(inspectResult.value).toHaveLength(0);
     expiring.close();
   });
+
+  // ─── Snapshot tests ───────────────────────────────────
+
+  test("saveSnapshot captures current entries", async () => {
+    await store.set("key1", "value1", "stage1");
+    await store.set("key2", "value2", "stage2");
+
+    const result = store.saveSnapshot("test-snap", "user");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.name).toBe("test-snap");
+    expect(result.value.entryCount).toBe(2);
+    expect(result.value.id).toBeTruthy();
+  });
+
+  test("listSnapshots returns saved snapshots", async () => {
+    await store.set("key1", "value1", "s1");
+    store.saveSnapshot("snap1", "user");
+    store.saveSnapshot("snap2", "user", "description here");
+
+    const result = store.listSnapshots();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.length).toBe(2);
+    // Both snapshots present
+    const names = result.value.map((s) => s.name);
+    expect(names).toContain("snap1");
+    expect(names).toContain("snap2");
+    const snap2 = result.value.find((s) => s.name === "snap2");
+    expect(snap2?.description).toBe("description here");
+  });
+
+  test("restoreSnapshot replaces current entries", async () => {
+    await store.set("original", "data", "s1");
+    const snap = store.saveSnapshot("before-change", "user");
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+
+    // Modify context
+    await store.set("original", "modified", "s2");
+    await store.set("new-key", "new-value", "s2");
+
+    // Restore
+    const result = store.restoreSnapshot(snap.value.id);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.restored).toBe(1);
+
+    // Verify state
+    const entry = await store.get("original");
+    expect(entry.ok).toBe(true);
+    if (entry.ok) expect(entry.value?.value).toBe("data");
+
+    const newKey = await store.get("new-key");
+    expect(newKey.ok).toBe(true);
+    if (newKey.ok) expect(newKey.value).toBeNull(); // new-key was not in snapshot
+  });
+
+  test("deleteSnapshot removes a snapshot", async () => {
+    await store.set("k", "v", "s");
+    const snap = store.saveSnapshot("to-delete", "user");
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+
+    const del = store.deleteSnapshot(snap.value.id);
+    expect(del.ok).toBe(true);
+    if (del.ok) expect(del.value).toBe(true);
+
+    const list = store.listSnapshots();
+    expect(list.ok).toBe(true);
+    if (list.ok) expect(list.value.length).toBe(0);
+  });
+
+  test("getSnapshot returns full entry data", async () => {
+    await store.set("a", "1", "s1");
+    await store.set("b", "2", "s2");
+    const snap = store.saveSnapshot("full", "user");
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+
+    const result = store.getSnapshot(snap.value.id);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).not.toBeNull();
+    expect(result.value!.entries.length).toBe(2);
+    expect(result.value!.entries.find((e) => e.key === "a")?.value).toBe("1");
+  });
+
+  test("getSnapshot returns null for unknown ID", () => {
+    const result = store.getSnapshot("nonexistent");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBeNull();
+  });
+
+  test("restoreSnapshot fails for unknown ID", () => {
+    const result = store.restoreSnapshot("nonexistent");
+    expect(result.ok).toBe(false);
+  });
+
+  test("saveSnapshot on empty store creates empty snapshot", () => {
+    const result = store.saveSnapshot("empty", "user");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.entryCount).toBe(0);
+  });
 });
