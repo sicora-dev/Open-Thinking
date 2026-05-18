@@ -5,8 +5,9 @@ import { basename, dirname, resolve } from "node:path";
 import type { Command } from "commander";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
-import { createPermissionEngine, type PermissionEngine } from "../../core/permissions";
+import { createPermissionEngine } from "../../core/permissions";
 import type { PermissionMode } from "../../core/permissions";
+import type { Sandbox } from "../../core/sandbox";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
@@ -188,6 +189,25 @@ export function registerRunCommand(program: Command): void {
         prompt: options.input,
       });
 
+      // Sandbox review callback for one-shot CLI
+      async function onSandboxReview(stgName: string, sandbox: Sandbox): Promise<"apply" | "discard"> {
+        const diffs = sandbox.diff();
+        console.log(`\n[${stgName}] Sandbox: ${diffs.length} file(s) changed`);
+        for (const d of diffs) {
+          console.log(`  ${d.status === "added" ? "+" : d.status === "deleted" ? "-" : "~"} ${d.path}`);
+        }
+        console.log(sandbox.formatDiff());
+
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        return new Promise<"apply" | "discard">((resolve) => {
+          rl.question("Apply changes? (y/n) ", (answer) => {
+            rl.close();
+            resolve(answer.trim().toLowerCase() === "y" || answer.trim() === "" ? "apply" : "discard");
+          });
+        });
+      }
+
       // Execute
       const result = await executePipeline({
         config,
@@ -198,6 +218,7 @@ export function registerRunCommand(program: Command): void {
         workingDir: process.cwd(),
         skillsDir,
         permissionEngine,
+        onSandboxReview,
       });
 
       contextStore.close();

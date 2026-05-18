@@ -5,6 +5,7 @@
  */
 import type { EventBus } from "../../core/events/event-bus";
 import type { PermissionEngine } from "../../core/permissions";
+import { type Sandbox, createSandbox } from "../../core/sandbox";
 import type { PolicyEngine } from "../../policies/engine";
 import { estimateCost as estimateCostFromPricing, isLocalProvider } from "../../providers/pricing";
 import { loadSkillDefinition } from "../../skills/catalog";
@@ -49,6 +50,12 @@ export type ExecutorDeps = {
   onTokenLimit?: (stageName: string, summary: import("./agent-loop").WorkSummary) => Promise<boolean>;
   /** Permission engine for human-in-the-loop tool approval. */
   permissionEngine?: PermissionEngine;
+  /**
+   * Callback invoked when a stage running in sandbox mode finishes.
+   * The sandbox contains the staged changes. Return "apply" to write
+   * changes to the real filesystem, or "discard" to throw them away.
+   */
+  onSandboxReview?: (stageName: string, sandbox: Sandbox) => Promise<"apply" | "discard">;
 };
 
 /**
@@ -326,6 +333,11 @@ async function executeStage(
   // Load skill prompt + manifest (tool permissions)
   const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
 
+  // Determine if this stage should run in a sandbox
+  const stagePermissionMode = stageDef.permissions ?? deps.config.permissions ?? "confirm";
+  const useSandbox = stagePermissionMode === "sandbox";
+  const sandbox = useSandbox ? createSandbox(deps.workingDir, `${stageName}-${Date.now()}`) : undefined;
+
   // Resolve tool permissions: stage YAML overrides > skill manifest > all tools
   const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
   const toolRegistry = createToolRegistry(
@@ -338,6 +350,7 @@ async function executeStage(
       stageName,
     },
     deps.permissionEngine ? { engine: deps.permissionEngine, stageName } : undefined,
+    sandbox,
   );
 
   // Build chat request — inject persistent context (project soul, user prefs, etc.)
@@ -440,6 +453,30 @@ async function executeStage(
     });
   }
 
+  // Sandbox review: if the stage ran in a sandbox, ask the user to review
+  let sandboxApplied = false;
+  if (sandbox) {
+    const diffs = sandbox.diff();
+    if (diffs.length > 0 && deps.onSandboxReview) {
+      const decision = await deps.onSandboxReview(stageName, sandbox);
+      if (decision === "apply") {
+        const applyResult = sandbox.apply();
+        if (applyResult.ok) {
+          sandboxApplied = true;
+        } else {
+          eventBus.emit({ type: "stage:warning", stageName, message: `Sandbox apply failed: ${applyResult.error.message}` });
+        }
+      } else {
+        sandbox.discard();
+      }
+    } else if (diffs.length === 0) {
+      sandbox.discard();
+    } else {
+      // No review callback — auto-discard
+      sandbox.discard();
+    }
+  }
+
   const result: StageResult = {
     stageName,
     status: "success",
@@ -451,6 +488,7 @@ async function executeStage(
     contextKeysWritten,
     stopReason: agentResult.stopReason,
     workSummary: agentResult.workSummary,
+    sandboxApplied: sandbox ? sandboxApplied : undefined,
   };
 
   eventBus.emit({ type: "stage:complete", result });

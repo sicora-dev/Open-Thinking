@@ -292,6 +292,8 @@ export type StageResult = {
   stopReason?: "done" | "cancelled" | "max_iterations" | "token_limit" | "error";
   /** Files written and commands run during the stage. */
   workSummary?: { filesWritten: string[]; commandsRun: string[] };
+  /** Whether sandbox changes were applied (only set when stage ran in sandbox mode). */
+  sandboxApplied?: boolean;
 };
 
 export type PipelineRunResult = {
