@@ -9,6 +9,7 @@ import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
 import { createPermissionEngine } from "../../core/permissions";
 import type { PermissionMode } from "../../core/permissions";
+import type { Sandbox } from "../../core/sandbox";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
@@ -322,6 +323,44 @@ async function executePipelinePrompt(
     }
   });
 
+  // Sandbox review callback: show diff and ask user to apply or discard
+  async function onSandboxReview(stgName: string, sandbox: Sandbox): Promise<"apply" | "discard"> {
+    const diffs = sandbox.diff();
+    console.log();
+    console.log(`  ${c("cyan", "Sandbox review")} for ${c("bold", stgName)}`);
+    console.log(`  ${c("dim", `${diffs.length} file(s) changed:`)}`);
+    for (const d of diffs) {
+      const icon = d.status === "added" ? c("green", "+") : d.status === "deleted" ? c("red", "-") : c("yellow", "~");
+      console.log(`    ${icon} ${d.path} (${d.status})`);
+    }
+    console.log();
+    console.log(c("dim", sandbox.formatDiff().split("\n").map((l) => `    ${l}`).join("\n")));
+    console.log();
+
+    return new Promise<"apply" | "discard">((resolve) => {
+      process.stdout.write(`  ${c("cyan", "Apply changes?")} ${c("dim", "(y/n) ")}`);
+      const onData = (data: Buffer) => {
+        const key = data.toString().trim().toLowerCase();
+        if (key === "y" || key === "yes" || key === "") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("green", "Applied.")}`)
+          console.log();
+          resolve("apply");
+        } else if (key === "n" || key === "no") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("yellow", "Discarded.")}`)
+          console.log();
+          resolve("discard");
+        }
+      };
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      process.stdin.on("data", onData);
+    });
+  }
+
   // Token limit callback: ask the user if they want to continue
   async function onTokenLimit(
     stgName: string,
@@ -378,6 +417,7 @@ async function executePipelinePrompt(
       signal: abortController?.signal,
       onTokenLimit,
       permissionEngine,
+      onSandboxReview,
     });
   } finally {
     meter.stop();
