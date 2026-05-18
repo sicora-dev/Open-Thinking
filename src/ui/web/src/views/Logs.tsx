@@ -126,7 +126,17 @@ export function Logs() {
           </div>
         )}
         {filtered.map((line, index) => (
-          <div key={`${line.runId}-${line.ts}-${index}`} style={{ padding: "2px 20px", display: "flex", gap: 14, alignItems: "baseline" }}>
+          <div
+            key={`${line.runId}-${line.ts}-${index}`}
+            onClick={() => { window.location.hash = `#/runs/${line.runId}?from=logs`; }}
+            style={{
+              padding: "2px 20px",
+              display: "flex",
+              gap: 14,
+              alignItems: "baseline",
+              cursor: "pointer",
+            }}
+          >
             <span style={{ color: "var(--fg-dim)" }}>{formatTime(line.ts)}</span>
             <span style={{
               color: lvlColor[line.level] ?? "var(--fg-muted)",

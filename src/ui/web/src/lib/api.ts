@@ -77,6 +77,14 @@ export type RunRow = {
   totalCost: number;
 };
 
+export type PendingPermission = {
+  id: string;
+  tool: string;
+  risk: "safe" | "moderate" | "dangerous";
+  description: string;
+  subject: string;
+};
+
 export type FsEntry = {
   name: string;
   path: string;
@@ -196,7 +204,19 @@ export const api = {
       cancellable: boolean;
     }>(`/api/runs/${id}`),
   cancelRun: (id: string) =>
-    req<{ ok: boolean }>(`/api/runs/${id}/cancel`, { method: "POST" }),
+    req<{ ok: boolean; stale?: boolean }>(`/api/runs/${id}/cancel`, { method: "POST" }),
+  listRunPermissions: (id: string) =>
+    req<{ pending: PendingPermission[] }>(`/api/runs/${id}/permissions`).then((r) => r.pending),
+  resolveRunPermission: (
+    id: string,
+    requestId: string,
+    action: "allow" | "deny",
+    remember = false,
+  ) =>
+    req<{ ok: boolean }>(`/api/runs/${id}/permission`, {
+      method: "POST",
+      body: JSON.stringify({ requestId, action, remember }),
+    }),
 
   // Context
   listContext: (options?: { projectId?: string; prefix?: string }) => {

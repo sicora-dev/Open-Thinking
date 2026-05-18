@@ -52,7 +52,7 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   );
 }
 
-export function RunPipeline() {
+export function RunPipeline({ initialRunId }: { initialRunId?: string }) {
   const { pushToast } = useToast();
   const wrapRef = useRef<HTMLDivElement>(null);
   const seenSeqsRef = useRef<Set<number>>(new Set());
@@ -122,6 +122,11 @@ export function RunPipeline() {
   useEffect(() => {
     loadPipelines();
   }, [loadPipelines]);
+
+  useEffect(() => {
+    if (!initialRunId) return;
+    setRunId(initialRunId);
+  }, [initialRunId]);
 
   useEffect(() => {
     if (runId) loadRun(runId);
@@ -372,8 +377,18 @@ export function RunPipeline() {
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: "flex", gap: 6 }}>
+              {run && cancellable && (
+                <button
+                  type="button"
+                  style={{ ...btnGhost, color: "var(--err)" }}
+                  onClick={cancel}
+                  disabled={cancelBusy}
+                >
+                  {Icons.stop}<span style={{ marginLeft: 6 }}>{cancelBusy ? "Stopping..." : "Stop"}</span>
+                </button>
+              )}
               {run && (
-                <button type="button" style={btnGhost} onClick={() => { window.location.hash = `#/runs/${run.id}`; }}>{Icons.eye}<span style={{ marginLeft: 6 }}>Open detail</span></button>
+                <button type="button" style={btnGhost} onClick={() => { window.location.hash = `#/runs/${run.id}?from=run`; }}>{Icons.eye}<span style={{ marginLeft: 6 }}>Open detail</span></button>
               )}
               <button type="button" style={btnGhost} onClick={loadPipelines}>{Icons.refresh}<span style={{ marginLeft: 6 }}>Pipelines</span></button>
             </div>

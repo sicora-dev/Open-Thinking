@@ -84,6 +84,8 @@ import {
   unregisterProject,
 } from "./projects-index";
 import {
+  appendEvent,
+  finalizeRun,
   type RunStatus,
   getRun,
   getRunEvents,
@@ -805,8 +807,32 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
   }
 
   if (runCancelParams && method === "POST") {
-    const ok2 = cancelRun(runCancelParams.id ?? "");
-    return json({ ok: ok2 });
+    const runId = runCancelParams.id ?? "";
+    const activeCancelled = cancelRun(runId);
+    if (activeCancelled) return json({ ok: true, stale: false });
+
+    const run = getRun(runId);
+    if (!run) return notFound();
+    if (run.status === "running") {
+      const events = getRunEvents(runId, 0);
+      const nextSeq = events.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
+      finalizeRun(runId, "cancelled", {
+        tokens: run.totalTokens,
+        cost: run.totalCost,
+      });
+      appendEvent(runId, nextSeq, "run:error", {
+        error: "Run was marked cancelled because its worker process is no longer active.",
+      });
+      appendEvent(runId, nextSeq + 1, "run:done", {
+        status: "cancelled",
+        totalTokens: run.totalTokens,
+        totalCost: run.totalCost,
+        stale: true,
+      });
+      return json({ ok: true, stale: true });
+    }
+
+    return json({ ok: false });
   }
 
   // POST /api/runs/:id/permission — resolve a pending permission request
