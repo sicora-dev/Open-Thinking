@@ -141,6 +141,18 @@ describe("run_command", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("requires a non-empty string 'command'");
   });
+
+  test("blocks parent-directory escapes", async () => {
+    const result = await tool.execute({ command: "echo bad > ../escape.txt" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("outside the workspace");
+  });
+
+  test("blocks absolute output redirects", async () => {
+    const result = await tool.execute({ command: "echo bad > /tmp/openthk-escape.txt" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("outside the workspace");
+  });
 });
 
 describe("search_files", () => {

@@ -694,6 +694,7 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     skillsDir: deps.skillsDir,
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit,
+    permissionEngine: deps.permissionEngine,
     runAgentLoop,
   });
 
