@@ -8,6 +8,7 @@ import { createEventBus } from "../../core/events/event-bus";
 import { createPermissionEngine } from "../../core/permissions";
 import type { PermissionMode } from "../../core/permissions";
 import type { Sandbox } from "../../core/sandbox";
+import type { ErrorRecoveryAction } from "../../pipeline/executor";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
@@ -208,6 +209,22 @@ export function registerRunCommand(program: Command): void {
         });
       }
 
+      // Pause-on-error callback for one-shot CLI
+      async function onStageError(stgName: string, error: string): Promise<ErrorRecoveryAction> {
+        console.error(`\n[${stgName}] Failed: ${error.slice(0, 200)}`);
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        return new Promise<ErrorRecoveryAction>((resolve) => {
+          rl.question("(r)etry / (s)kip / (a)bort? ", (answer) => {
+            rl.close();
+            const a = answer.trim().toLowerCase();
+            if (a === "r" || a === "retry") resolve("retry");
+            else if (a === "s" || a === "skip") resolve("skip");
+            else resolve("abort");
+          });
+        });
+      }
+
       // Execute
       const result = await executePipeline({
         config,
@@ -219,6 +236,7 @@ export function registerRunCommand(program: Command): void {
         skillsDir,
         permissionEngine,
         onSandboxReview,
+        onStageError,
       });
 
       contextStore.close();

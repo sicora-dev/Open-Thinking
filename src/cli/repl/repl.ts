@@ -10,6 +10,7 @@ import { createEventBus } from "../../core/events/event-bus";
 import { createPermissionEngine } from "../../core/permissions";
 import type { PermissionMode } from "../../core/permissions";
 import type { Sandbox } from "../../core/sandbox";
+import type { ErrorRecoveryAction } from "../../pipeline/executor";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
@@ -361,6 +362,42 @@ async function executePipelinePrompt(
     });
   }
 
+  // Pause-on-error callback: ask the user what to do when a stage fails
+  async function onStageError(stgName: string, error: string): Promise<ErrorRecoveryAction> {
+    console.log();
+    console.log(`  ${c("red", "Stage failed:")} ${c("bold", stgName)}`);
+    console.log(`  ${c("dim", error.length > 200 ? `${error.slice(0, 200)}...` : error)}`);
+    console.log(`  ${c("dim", "(r)etry / (s)kip / (a)bort")}`);
+
+    return new Promise<ErrorRecoveryAction>((resolve) => {
+      const onData = (data: Buffer) => {
+        const key = data.toString().trim().toLowerCase();
+        if (key === "r" || key === "retry") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("cyan", "Retrying...")}`)
+          console.log();
+          resolve("retry");
+        } else if (key === "s" || key === "skip") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("yellow", "Skipped.")}`)
+          console.log();
+          resolve("skip");
+        } else if (key === "a" || key === "abort" || key === "") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("red", "Aborting.")}`)
+          console.log();
+          resolve("abort");
+        }
+      };
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      process.stdin.on("data", onData);
+    });
+  }
+
   // Token limit callback: ask the user if they want to continue
   async function onTokenLimit(
     stgName: string,
@@ -418,6 +455,7 @@ async function executePipelinePrompt(
       onTokenLimit,
       permissionEngine,
       onSandboxReview,
+      onStageError,
     });
   } finally {
     meter.stop();
