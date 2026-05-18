@@ -5,6 +5,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
+import { createPermissionStore } from "../../core/permissions";
 import { getUiAutostart, setUiAutostart } from "../../config/ui-config";
 import { resolveExecutionOrder } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
@@ -748,6 +749,44 @@ const commands: SlashCommand[] = [
       lines.push(`  Total: ${fmt(t.usage.totalTokens)} tok   ${fmtCost(t.cost)}`);
       lines.push("");
       return { output: lines.join("\n") };
+    },
+  },
+  {
+    name: "permissions",
+    aliases: ["perms"],
+    description: "Manage persistent permission rules",
+    usage: "[list|reset|remove <tool> [pattern]]",
+    async execute(args) {
+      const parts = args.trim().split(/\s+/);
+      const sub = parts[0] || "list";
+      const store = createPermissionStore();
+
+      if (sub === "list" || sub === "ls") {
+        const rules = store.listRules();
+        if (rules.length === 0) {
+          return { output: "  No permission rules saved.\n  Rules are created when you choose \"allow always\" or \"deny always\" during execution." };
+        }
+        const lines = rules.map((r) => {
+          const icon = r.action === "allow" ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
+          return `    ${icon} ${r.action.padEnd(5)} ${r.tool.padEnd(14)} ${r.pattern}`;
+        });
+        return { output: `  Permission rules:\n${lines.join("\n")}` };
+      }
+
+      if (sub === "reset" || sub === "clear") {
+        store.clearRules();
+        return { output: "  All permission rules cleared." };
+      }
+
+      if (sub === "remove" || sub === "rm") {
+        const tool = parts[1];
+        if (!tool) return { output: "  Usage: /permissions remove <tool> [pattern]" };
+        const pattern = parts[2];
+        const count = store.removeRule(tool, pattern);
+        return { output: count > 0 ? `  Removed ${count} rule(s).` : "  No matching rules found." };
+      }
+
+      return { output: `  Unknown: /permissions ${sub}. Use list, reset, or remove.` };
     },
   },
   {

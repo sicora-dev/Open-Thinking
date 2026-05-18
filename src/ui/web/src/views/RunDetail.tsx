@@ -1,41 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { Icons } from "../components/Icons";
 import { EmptyState } from "../components/EmptyState";
 import { useToast } from "../components/ToastProvider";
 import { api, type RunRow } from "../lib/api";
+import {
+  formatDurationMs,
+  formatMoney,
+  formatTime,
+  projectRun,
+  RUN_EVENT_TYPES,
+  runDuration,
+  type RunEvent,
+} from "../lib/run-events";
 import { subscribeRunStream, type RunStreamState } from "../lib/run-stream";
-
-type Event = {
-  seq: number;
-  ts: string;
-  type: string;
-  payload: { seq?: number; ts?: string; payload?: unknown } | unknown;
-};
-
-type StageState = {
-  name: string;
-  status: "running" | "success" | "failed" | "cancelled";
-  durationMs?: number;
-  tokens?: number;
-};
-
-type EventPayload = Record<string, unknown> & {
-  stageName?: string;
-  error?: string;
-  message?: string;
-  key?: string;
-  toolName?: string;
-  success?: boolean;
-  durationMs?: number;
-  iteration?: number;
-  usage?: { totalTokens?: number };
-  result?: {
-    stageName?: string;
-    status?: string;
-    durationMs?: number;
-    usage?: { totalTokens?: number };
-    error?: string;
-  };
-};
 
 const STATUS_COLOR: Record<string, string> = {
   running: "text-accent",
@@ -44,10 +21,48 @@ const STATUS_COLOR: Record<string, string> = {
   cancelled: "text-yellow-400",
 };
 
-export function RunDetail({ runId }: { runId: string }) {
+const btnGhost: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "5px 10px",
+  background: "var(--bg-card)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--r-sm)",
+  cursor: "pointer",
+  fontSize: 12.5,
+  color: "var(--fg)",
+  fontFamily: "inherit",
+  textDecoration: "none",
+};
+
+const panelStyle: React.CSSProperties = {
+  background: "var(--bg-card)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--r-lg)",
+  overflow: "hidden",
+};
+
+const lvlColor: Record<string, string> = {
+  info: "var(--fg-muted)",
+  tool: "var(--cyan-600)",
+  ok: "var(--ok)",
+  warn: "var(--warn)",
+  err: "var(--err)",
+  ctx: "#8b5cf6",
+  model: "#f59e0b",
+};
+
+function statusColor(status: RunRow["status"]): string {
+  if (status === "running") return "var(--cyan-500)";
+  if (status === "success") return "var(--ok)";
+  if (status === "failed") return "var(--err)";
+  return "var(--warn)";
+}
+
+export function RunDetail({ runId, from }: { runId: string; from?: string }) {
   const { pushToast } = useToast();
   const [run, setRun] = useState<RunRow | null>(null);
-  const [events, setEvents] = useState<Event[]>([]);
+  const [events, setEvents] = useState<RunEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(false);
   const [cancellable, setCancellable] = useState(false);
@@ -83,32 +98,9 @@ export function RunDetail({ runId }: { runId: string }) {
       return;
     }
 
-    const handlers: string[] = [
-      "pipeline:start",
-      "pipeline:complete",
-      "stage:start",
-      "stage:progress",
-      "stage:complete",
-      "stage:error",
-      "stage:warning",
-      "context:read",
-      "context:write",
-      "policy:violation",
-      "tool:call",
-      "tool:result",
-      "delegate:start",
-      "delegate:complete",
-      "delegate:error",
-      "tokens:update",
-      "thinking:start",
-      "thinking:end",
-      "run:done",
-      "run:error",
-    ];
-
     return subscribeRunStream({
       runId,
-      eventTypes: handlers,
+      eventTypes: RUN_EVENT_TYPES,
       onStateChange: setStreamState,
       isTerminalEvent: (event) => event.type === "run:done",
       onEvent: (data) => {
@@ -136,17 +128,19 @@ export function RunDetail({ runId }: { runId: string }) {
     });
   }, [active, pushToast, runId]);
 
-  const projection = projectEvents(events);
-  const stageEntries = [...projection.stages.values()];
-  const selectedStageLog = selectedStage ? projection.stageLogs[selectedStage] ?? [] : [];
+  const projection = run ? projectRun(run, events) : null;
+  const stageEntries = projection?.stages ?? [];
+  const selectedStageLog = selectedStage
+    ? stageEntries.find((stage) => stage.id === selectedStage)?.logs ?? []
+    : [];
 
   useEffect(() => {
-    const firstStage = stageEntries[0]?.name ?? null;
+    const firstStage = stageEntries[0]?.id ?? null;
     if (!firstStage) return;
-    if (!selectedStage || !projection.stages.has(selectedStage)) {
+    if (!selectedStage || !stageEntries.some((stage) => stage.id === selectedStage)) {
       setSelectedStage(firstStage);
     }
-  }, [events, selectedStage, projection.stages, stageEntries]);
+  }, [events, selectedStage, stageEntries]);
 
   // Auto-scroll
   useEffect(() => {
@@ -157,12 +151,22 @@ export function RunDetail({ runId }: { runId: string }) {
   const cancel = async () => {
     setCancelBusy(true);
     try {
-      await api.cancelRun(runId);
-      pushToast({ kind: "info", title: "Cancellation requested" });
+      const result = await api.cancelRun(runId);
+      if (!result.ok) throw new Error("Run is not active in this UI process.");
+      pushToast({
+        kind: "info",
+        title: result.stale ? "Run marked cancelled" : "Cancellation requested",
+        description: result.stale ? "The worker process was no longer active." : undefined,
+      });
+      const detail = await api.getRun(runId);
+      setRun(detail.run);
+      setActive(detail.active);
+      setCancellable(detail.cancellable);
     } catch (e) {
       const message = (e as Error).message;
-      setCancelBusy(false);
       pushToast({ kind: "error", title: "Could not cancel run", description: message });
+    } finally {
+      setCancelBusy(false);
     }
   };
 
@@ -184,118 +188,213 @@ export function RunDetail({ runId }: { runId: string }) {
   const completedStages = stageEntries.filter((stage) => stage.status === "success").length;
   const failedStages = stageEntries.filter((stage) => stage.status === "failed").length;
   const runningStages = stageEntries.filter((stage) => stage.status === "running").length;
+  const backTarget = from === "run" ? `#/run?runId=${run.id}` : from === "logs" ? "#/logs" : "#/runs";
+  const backLabel = from === "run" ? "Run pipeline" : from === "logs" ? "Logs" : "Runs";
+  const simpleLogsTarget = `#/run?runId=${run.id}`;
+  const canRequestStop = run.status === "running" || cancellable;
+  const exportRun = () => {
+    downloadText(
+      buildRunExport(run, events),
+      `openthk-run-${run.id.slice(0, 8)}.md`,
+      "text/markdown;charset=utf-8",
+    );
+    pushToast({ kind: "success", title: "Run exported", description: `${events.length} events` });
+  };
 
   return (
-    <div className="h-full flex flex-col">
-      <header className="px-6 py-4 border-b border-ink-700 flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-3">
-            <a href="#/runs" className="text-ink-400 hover:text-ink-100 text-sm">
-              ← Runs
-            </a>
-            <h1 className="text-lg font-medium">{run.pipelineName}</h1>
-            <span className={`text-xs uppercase ${STATUS_COLOR[run.status] ?? ""}`}>
-              {run.status}
-            </span>
+    <div style={{ height: "100%", overflowY: "auto", padding: "20px 24px" }}>
+      <div style={{ ...panelStyle, padding: 16, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <a
+                href={backTarget}
+                style={{ color: "var(--fg-muted)", fontSize: 13, textDecoration: "none" }}
+              >
+                ← {backLabel}
+              </a>
+              <span
+                className={run.status === "running" ? "ot-pulse" : undefined}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  background: statusColor(run.status),
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{run.status}</span>
+              <span className="mono" style={{ color: "var(--fg-muted)", fontSize: 12 }}>
+                {run.id.slice(0, 8)}
+              </span>
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {run.pipelineName}
+            </div>
+            <div className="mono" style={{ fontSize: 11.5, color: "var(--fg-muted)", marginTop: 4 }}>
+              {runDuration(run)} · {completedStages} of {stageEntries.length || 0} stages complete · {runningStages} running · {failedStages} failed · {(projection?.totalTokens ?? run.totalTokens).toLocaleString()} tok · stream:{streamState}
+            </div>
           </div>
-          <p className="text-xs text-ink-400 mt-1 font-mono">{run.id}</p>
-          <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-ink-400 font-mono">
-            <span>{completedStages}/{stageEntries.length || 0} complete</span>
-            <span>{runningStages} running</span>
-            <span>{failedStages} failed</span>
-            <span>{projection.totalTokens.toLocaleString()} tok</span>
-            <span>stream:{streamState}</span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <a style={btnGhost} href={simpleLogsTarget} title="Open this run in the simple execution log view">
+              {Icons.terminal}<span style={{ marginLeft: 6 }}>Simple logs</span>
+            </a>
+            <button type="button" style={btnGhost} onClick={exportRun} title="Export run logs as Markdown">
+              {Icons.file}<span style={{ marginLeft: 6 }}>Export logs</span>
+            </button>
+            {canRequestStop && (
+              <button
+                type="button"
+                style={{ ...btnGhost, color: "var(--err)" }}
+                disabled={cancelBusy}
+                onClick={cancel}
+                title="Stop this run"
+              >
+                {Icons.stop}<span style={{ marginLeft: 6 }}>{cancelBusy ? "Stopping..." : "Stop run"}</span>
+              </button>
+            )}
           </div>
         </div>
-        {cancellable && (
-          <button className="btn" disabled={cancelBusy} onClick={cancel}>
-            {cancelBusy ? "Cancelling…" : "Cancel run"}
-          </button>
-        )}
-      </header>
+      </div>
 
-      <div className="flex-1 grid grid-cols-3 gap-0 overflow-hidden">
-        {/* Stages panel */}
-        <aside className="col-span-1 border-r border-ink-700 overflow-auto">
-          <div className="px-4 py-2 label border-b border-ink-700">Stages</div>
+      <div style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)", gap: 16, minHeight: 0 }}>
+        <aside style={{ ...panelStyle, alignSelf: "start" }}>
+          <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", fontSize: 12.5, fontWeight: 600 }}>
+            Stages
+          </div>
           {stageEntries.length === 0 ? (
-            <div className="p-4 text-ink-400 text-xs">Waiting for stages…</div>
+            <div style={{ padding: 14, color: "var(--fg-muted)", fontSize: 12 }}>Waiting for stages...</div>
           ) : (
-            <ul>
-              {stageEntries.map((s) => (
-                <li
-                  key={s.name}
-                  className={`px-4 py-2 border-b border-ink-700/50 flex items-center justify-between cursor-pointer ${
-                    selectedStage === s.name ? "bg-ink-800" : "hover:bg-ink-800/70"
-                  }`}
-                  onClick={() => setSelectedStage(s.name)}
+            <div>
+              {stageEntries.map((stage) => (
+                <button
+                  key={stage.id}
+                  type="button"
+                  onClick={() => setSelectedStage(stage.id)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "10px 14px",
+                    border: "none",
+                    borderBottom: "1px solid var(--border)",
+                    background: selectedStage === stage.id ? "var(--bg-soft)" : "transparent",
+                    color: "var(--fg)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    textAlign: "left",
+                  }}
                 >
-                  <div className="flex items-center gap-2">
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                     <span
-                      className={`w-2 h-2 ${
-                        s.status === "running"
-                          ? "bg-accent animate-pulse"
-                          : s.status === "success"
-                            ? "bg-green-400"
-                            : s.status === "failed"
-                              ? "bg-red-400"
-                              : "bg-yellow-400"
-                      }`}
+                      className={stage.status === "running" ? "ot-pulse" : undefined}
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: 3,
+                        background: stage.status === "running" ? "var(--cyan-500)" : statusColor(stage.status as RunRow["status"]),
+                        flexShrink: 0,
+                      }}
                     />
-                    <span className="text-sm">{s.name}</span>
-                  </div>
-                  <div className="text-[11px] text-ink-400 font-mono">
-                    {s.durationMs != null ? `${s.durationMs}ms` : ""}
-                    {s.tokens ? ` · ${s.tokens}t` : ""}
-                  </div>
-                </li>
+                    <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {stage.name}
+                    </span>
+                  </span>
+                  <span className="mono" style={{ color: "var(--fg-muted)", fontSize: 11.5, flexShrink: 0 }}>
+                    {stage.durationMs != null ? formatDurationMs(stage.durationMs) : ""}
+                    {stage.tokens ? ` · ${stage.tokens}t` : ""}
+                  </span>
+                </button>
               ))}
-            </ul>
+            </div>
           )}
         </aside>
 
-        {/* Event log */}
-        <section className="col-span-2 min-w-0 overflow-hidden">
-          <div className="grid h-full" style={{ gridTemplateRows: "minmax(0, 1fr) minmax(0, 1fr)" }}>
-            <div className="min-h-0 border-b border-ink-700 flex flex-col">
-              <div className="px-4 py-2 label border-b border-ink-700">
+        <section style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          <div style={{ ...panelStyle, minHeight: 280, display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "var(--fg-dim)" }}>{Icons.terminal}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600 }}>
                 {selectedStage ? `${selectedStage} log` : "Stage log"}
-              </div>
-              <div
-                ref={stageLogRef}
-                className="flex-1 overflow-auto font-mono text-[11px] p-4 space-y-1"
-              >
-                {selectedStageLog.map((line, index) => (
-                  <div key={`${selectedStage}-${index}`} className="text-ink-300 whitespace-pre-wrap break-words">
+              </span>
+            </div>
+            <div
+              ref={stageLogRef}
+              style={{
+                flex: 1,
+                minHeight: 0,
+                maxHeight: 360,
+                overflowY: "auto",
+                padding: "12px 14px",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+              }}
+            >
+              {selectedStageLog.length === 0 ? (
+                <div style={{ color: "var(--fg-muted)" }}>
+                  {selectedStage ? "No activity for this stage yet." : "Select a stage to inspect its activity."}
+                </div>
+              ) : (
+                selectedStageLog.map((line, index) => (
+                  <div key={`${selectedStage}-${index}`} style={{ color: "var(--fg)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", padding: "1px 0" }}>
                     {line}
                   </div>
-                ))}
-                {selectedStageLog.length === 0 && (
-                  <div className="text-ink-400">
-                    {selectedStage ? "No activity for this stage yet." : "Select a stage to inspect its activity."}
-                  </div>
-                )}
-              </div>
+                ))
+              )}
             </div>
+          </div>
 
-            <div className="min-h-0 flex flex-col">
-              <div className="px-4 py-2 label border-b border-ink-700">Event log</div>
-              <div ref={logRef} className="flex-1 overflow-auto font-mono text-[11px] p-4 space-y-1">
-                {events.map((e) => (
-                  <div key={e.seq} className="text-ink-300">
-                    <span className="text-ink-400">
-                      [{new Date(e.ts).toLocaleTimeString()}]
-                    </span>{" "}
-                    <span className="text-accent">{e.type}</span>{" "}
-                    <span className="text-ink-400">
-                      {summarize(e.type, e.payload)}
-                    </span>
-                  </div>
-                ))}
-                {events.length === 0 && (
-                  <div className="text-ink-400">No events yet.</div>
-                )}
-              </div>
+          <div style={{ ...panelStyle, minHeight: 360, display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "var(--fg-dim)" }}>{Icons.terminal}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600 }}>Event log</span>
+              <div style={{ flex: 1 }} />
+              <span className="mono" style={{ fontSize: 11.5, color: "var(--fg-muted)" }}>{events.length} events</span>
+            </div>
+            <div
+              ref={logRef}
+              style={{
+                flex: 1,
+                minHeight: 0,
+                maxHeight: 460,
+                overflowY: "auto",
+                padding: "12px 14px",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+              }}
+            >
+              {events.length === 0 ? (
+                <div style={{ color: "var(--fg-muted)" }}>No events yet.</div>
+              ) : (
+                events.map((event, index) => {
+                  const line = projection?.eventLogs[index];
+                  return (
+                    <div key={event.seq} style={{ display: "flex", gap: 12, alignItems: "baseline", padding: "1px 0" }}>
+                      <span style={{ color: "var(--fg-dim)", flexShrink: 0 }}>{formatTime(event.ts)}</span>
+                      <span
+                        style={{
+                          color: lvlColor[line?.level ?? "info"] ?? "var(--fg-muted)",
+                          width: 42,
+                          flexShrink: 0,
+                          textTransform: "uppercase",
+                          fontSize: 10.5,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {line?.level ?? event.type}
+                      </span>
+                      <span style={{ color: "var(--fg-muted)", width: 104, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {line?.source ?? ""}
+                      </span>
+                      <span style={{ color: "var(--fg)", flex: 1, overflowWrap: "anywhere" }}>
+                        {line?.message ?? summarizePayload(event.payload)}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </section>
@@ -304,123 +403,91 @@ export function RunDetail({ runId }: { runId: string }) {
   );
 }
 
-function projectEvents(events: Event[]): {
-  stages: Map<string, StageState>;
-  stageLogs: Record<string, string[]>;
-  totalTokens: number;
-} {
-  const stages = new Map<string, StageState>();
-  const stageLogs: Record<string, string[]> = {};
-  let totalTokens = 0;
+function buildRunExport(run: RunRow, events: RunEvent[]): string {
+  const projection = projectRun(run, events);
+  const lines = [
+    `# OpenThinking Run ${run.id}`,
+    "",
+    "## Summary",
+    "",
+    `- Pipeline: ${run.pipelineName}`,
+    `- Status: ${run.status}`,
+    `- Started: ${run.startedAt}`,
+    `- Ended: ${run.endedAt ?? "running"}`,
+    `- Duration: ${runDuration(run) || "n/a"}`,
+    `- Total tokens: ${projection.totalTokens.toLocaleString()}`,
+    `- Total cost: ${formatMoney(projection.totalCost)}`,
+    `- Pipeline path: ${run.pipelinePath ?? "n/a"}`,
+    "",
+    "## Input",
+    "",
+    "```text",
+    run.input,
+    "```",
+    "",
+    "## Stages",
+    "",
+  ];
 
-  for (const event of events) {
-    const payload = event.payload as EventPayload;
-    const stageName = getStageName(event.type, payload);
-    if (stageName && !stageLogs[stageName]) {
-      stageLogs[stageName] = [];
-    }
-
-    if (event.type === "stage:start" && payload.stageName) {
-      stages.set(payload.stageName, { name: payload.stageName, status: "running" });
-    }
-
-    if (event.type === "stage:complete" && payload.result?.stageName) {
-      const result = payload.result;
-      const resultStageName = result.stageName;
-      if (!resultStageName) continue;
-      stages.set(resultStageName, {
-        name: resultStageName,
-        status: (result.status as StageState["status"]) ?? "success",
-        durationMs: result.durationMs,
-        tokens: result.usage?.totalTokens,
-      });
-    }
-
-    if (event.type === "stage:error" && payload.stageName) {
-      const current = stages.get(payload.stageName);
-      stages.set(payload.stageName, {
-        name: payload.stageName,
-        status: "failed",
-        durationMs: current?.durationMs,
-        tokens: current?.tokens,
-      });
-    }
-
-    if (event.type === "tokens:update") {
-      totalTokens = Math.max(totalTokens, payload.usage?.totalTokens ?? 0);
-      if (payload.stageName) {
-        const current = stages.get(payload.stageName) ?? {
-          name: payload.stageName,
-          status: "running",
-        };
-        stages.set(payload.stageName, {
-          ...current,
-          tokens: payload.usage?.totalTokens ?? current.tokens,
-        });
-      }
-    }
-
-    const stageLine = summarizeStageEvent(event.type, payload);
-    if (stageName && stageLine) {
-      stageLogs[stageName]?.push(
-        `[${new Date(event.ts).toLocaleTimeString()}] ${stageLine}`,
+  if (projection.stages.length === 0) {
+    lines.push("No stage events were recorded.", "");
+  } else {
+    lines.push("| Stage | Status | Duration | Tokens | Cost | Tools |");
+    lines.push("| --- | --- | ---: | ---: | ---: | --- |");
+    for (const stage of projection.stages) {
+      lines.push(
+        `| ${escapeMarkdownCell(stage.name)} | ${stage.status} | ${
+          stage.durationMs == null ? "" : formatDurationMs(stage.durationMs)
+        } | ${stage.tokens == null ? "" : stage.tokens.toLocaleString()} | ${
+          stage.cost == null ? "" : formatMoney(stage.cost)
+        } | ${escapeMarkdownCell(stage.tools.join(", "))} |`,
       );
     }
+    lines.push("");
   }
 
-  return { stages, stageLogs, totalTokens };
+  lines.push("## Stage Logs", "");
+  for (const stage of projection.stages) {
+    lines.push(`### ${stage.name}`, "");
+    if (stage.logs.length === 0) {
+      lines.push("No log lines recorded for this stage.", "");
+      continue;
+    }
+    lines.push("```text", ...stage.logs, "```", "");
+  }
+
+  lines.push("## Event Timeline", "");
+  if (projection.eventLogs.length === 0) {
+    lines.push("No events recorded.", "");
+  } else {
+    lines.push("```text");
+    for (const line of projection.eventLogs) {
+      lines.push(
+        `[${line.ts}] ${line.level.toUpperCase()} ${line.source} ${line.type} - ${line.message}`,
+      );
+    }
+    lines.push("```", "");
+  }
+
+  lines.push("## Raw Events", "", "```json", JSON.stringify(events, null, 2), "```", "");
+  return lines.join("\n");
 }
 
-function getStageName(type: string, payload: EventPayload): string | null {
-  if (payload.stageName) return payload.stageName;
-  if (type === "stage:complete" && payload.result?.stageName) return payload.result.stageName;
-  if (type === "delegate:start" && typeof payload.agentName === "string") return payload.agentName;
-  if (type === "delegate:complete" && typeof payload.agentName === "string") return payload.agentName;
-  if (type === "delegate:error" && typeof payload.agentName === "string") return payload.agentName;
-  return null;
+function downloadText(text: string, filename: string, type: string): void {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-function summarizeStageEvent(type: string, payload: EventPayload): string | null {
-  if (type === "stage:start") return `started on ${payload.model}`;
-  if (type === "stage:progress") return JSON.stringify(payload.chunk ?? {}).slice(0, 160);
-  if (type === "stage:complete") {
-    return `completed ${payload.result?.status ?? "success"} in ${payload.result?.durationMs ?? 0}ms`;
-  }
-  if (type === "stage:error") return `error: ${payload.error}`;
-  if (type === "stage:warning") return `warning: ${payload.message}`;
-  if (type === "context:read") return `read ${payload.key}`;
-  if (type === "context:write") return `wrote ${payload.key}`;
-  if (type === "policy:violation") return `policy violation: ${payload.rule} (${payload.detail})`;
-  if (type === "tool:call") return `tool → ${payload.toolName}`;
-  if (type === "tool:result") {
-    const status = payload.success ? "ok" : "error";
-    return `tool ← ${payload.toolName} ${status} ${payload.durationMs ?? 0}ms`;
-  }
-  if (type === "tokens:update") {
-    return `tokens ${payload.usage?.totalTokens ?? 0} at iter ${payload.iteration ?? 0}`;
-  }
-  if (type === "thinking:start") return "waiting for model response";
-  if (type === "thinking:end") return "response received";
-  return null;
+function escapeMarkdownCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 
-function summarize(type: string, payload: unknown): string {
-  const p = payload as EventPayload;
-  if (!p) return "";
-  if (type === "stage:start") return `${p.stageName} (${p.model})`;
-  if (type === "stage:complete") {
-    const r = p.result;
-    return `${r?.stageName ?? ""} ${r?.status ?? ""} ${r?.durationMs ?? ""}ms`;
-  }
-  if (type === "stage:error") return `${p.stageName}: ${p.error}`;
-  if (type === "stage:warning") return `${p.stageName}: ${p.message}`;
-  if (type === "context:read") return `${p.stageName} read ${p.key}`;
-  if (type === "context:write") return `${p.stageName} wrote ${p.key}`;
-  if (type === "policy:violation") return `${p.stageName} ${p.rule}: ${p.detail}`;
-  if (type === "tool:call") return `${p.stageName} → ${p.toolName}`;
-  if (type === "tool:result") return `${p.stageName} ← ${p.toolName} ${p.success ? "ok" : "err"}`;
-  if (type === "thinking:start") return `${p.stageName} waiting for model`;
-  if (type === "thinking:end") return `${p.stageName} response received`;
-  if (type === "run:done") return `status=${p.status} tokens=${p.totalTokens}`;
-  return JSON.stringify(p).slice(0, 120);
+function summarizePayload(payload: unknown): string {
+  if (!payload) return "";
+  return JSON.stringify(payload).slice(0, 160);
 }

@@ -4,6 +4,7 @@
  * and failure routing (retry, re-route).
  */
 import type { EventBus } from "../../core/events/event-bus";
+import type { PermissionEngine } from "../../core/permissions";
 import type { PolicyEngine } from "../../policies/engine";
 import { estimateCost as estimateCostFromPricing, isLocalProvider } from "../../providers/pricing";
 import { loadSkillDefinition } from "../../skills/catalog";
@@ -46,6 +47,8 @@ export type ExecutorDeps = {
    * Returns true to continue, false to stop.
    */
   onTokenLimit?: (stageName: string, summary: import("./agent-loop").WorkSummary) => Promise<boolean>;
+  /** Permission engine for human-in-the-loop tool approval. */
+  permissionEngine?: PermissionEngine;
 };
 
 /**
@@ -325,12 +328,17 @@ async function executeStage(
 
   // Resolve tool permissions: stage YAML overrides > skill manifest > all tools
   const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
-  const toolRegistry = createToolRegistry(deps.workingDir, allowedTools, {
-    contextStore,
-    permissions: stageDef.context,
-    policyEngine,
-    stageName,
-  });
+  const toolRegistry = createToolRegistry(
+    deps.workingDir,
+    allowedTools,
+    {
+      contextStore,
+      permissions: stageDef.context,
+      policyEngine,
+      stageName,
+    },
+    deps.permissionEngine ? { engine: deps.permissionEngine, stageName } : undefined,
+  );
 
   // Build chat request — inject persistent context (project soul, user prefs, etc.)
   const persistentCtx = loadStageContext(deps.workingDir, stageName);

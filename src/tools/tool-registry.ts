@@ -5,7 +5,12 @@
  * a policy-aware `get_context` tool that lets the LLM lazily fetch
  * entries from the shared context store. The lazy fetcher is the
  * cornerstone of token-efficient context loading.
+ *
+ * When a PermissionEngine is provided, tool execution is gated by the
+ * permission system: safe tools auto-pass, risky tools may block until
+ * a human approves or denies the action.
  */
+import type { PermissionEngine } from "../core/permissions";
 import type { PolicyEngine } from "../policies/engine";
 import { type Result, err, ok } from "../shared/result";
 import type {
@@ -46,14 +51,24 @@ export type ContextAccess = {
 };
 
 /**
+ * Optional permission wiring for human-in-the-loop approval.
+ */
+export type PermissionAccess = {
+  engine: PermissionEngine;
+  stageName: string;
+};
+
+/**
  * @param workingDir - Base directory for file operations.
  * @param allowedTools - If provided, only these tools are registered. Others are excluded.
  * @param contextAccess - If provided, enables the lazy `get_context` tool.
+ * @param permissionAccess - If provided, gates tool execution through the permission engine.
  */
 export function createToolRegistry(
   workingDir: string,
   allowedTools?: string[],
   contextAccess?: ContextAccess,
+  permissionAccess?: PermissionAccess,
 ): ToolRegistry {
   const session: ToolSessionState = { fsEpoch: 0 };
   const tools = new Map<string, ToolFunction>();
@@ -98,6 +113,18 @@ export function createToolRegistry(
   async function execute(name: string, args: Record<string, unknown>): Promise<Result<string>> {
     const tool = tools.get(name);
     if (!tool) return err(new Error(`Unknown tool: ${name}`));
+
+    // Permission check (if engine is wired)
+    if (permissionAccess) {
+      const action = await permissionAccess.engine.check(
+        name,
+        args,
+        permissionAccess.stageName,
+      );
+      if (action === "deny") {
+        return err(new Error(`Permission denied for ${name}: ${args.path ?? args.command ?? ""}`));
+      }
+    }
 
     const result = await tool.execute(args);
     if (result.ok) {
