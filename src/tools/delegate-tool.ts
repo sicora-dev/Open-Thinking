@@ -6,6 +6,7 @@
  * runs its full agent loop. The output is returned as the tool result.
  */
 import type { EventBus } from "../core/events/event-bus";
+import type { PermissionEngine } from "../core/permissions";
 import type { PolicyEngine } from "../policies/engine";
 import { loadSkillDefinition } from "../skills/catalog";
 import { type Result, err, ok } from "../shared/result";
@@ -29,6 +30,7 @@ export type DelegateDeps = {
   workingDir: string;
   skillsDir?: string | string[];
   signal?: AbortSignal;
+  permissionEngine?: PermissionEngine;
   onTokenLimit?: (stageName: string, summary: { filesWritten: string[]; commandsRun: string[] }) => Promise<boolean>;
   /** Dynamically imported to avoid circular deps. Set by the executor before use. */
   runAgentLoop: (config: import("../pipeline/executor/agent-loop").AgentLoopConfig) => Promise<Result<import("../pipeline/executor/agent-loop").AgentLoopResult>>;
@@ -107,12 +109,17 @@ export function createDelegateTool(deps: DelegateDeps): ToolFunction {
       // Load skill
       const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
       const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
-      const toolRegistry = createToolRegistry(deps.workingDir, allowedTools, {
-        contextStore: deps.contextStore,
-        permissions: stageDef.context,
-        policyEngine: deps.policyEngine,
-        stageName: agentName,
-      });
+      const toolRegistry = createToolRegistry(
+        deps.workingDir,
+        allowedTools,
+        {
+          contextStore: deps.contextStore,
+          permissions: stageDef.context,
+          policyEngine: deps.policyEngine,
+          stageName: agentName,
+        },
+        deps.permissionEngine ? { engine: deps.permissionEngine, stageName: agentName } : undefined,
+      );
 
       // Build persistent context
       const persistentCtx = loadStageContext(deps.workingDir, agentName);
