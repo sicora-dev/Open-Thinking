@@ -22,6 +22,8 @@
  *   POST   /api/runs/:id/cancel                 — abort
  *   POST   /api/runs/:id/permission             — resolve a pending permission request
  *   GET    /api/runs/:id/permissions            — list pending permission requests
+ *   POST   /api/runs/:id/error-recovery        — resolve error recovery (retry/skip/abort)
+ *   GET    /api/runs/:id/error-recovery        — get pending error recovery state
  *   GET    /api/context                         — inspect project context stores
  *   GET    /api/context/snapshots               — list snapshots for a project
  *   POST   /api/context/snapshots               — save a snapshot
@@ -93,7 +95,7 @@ import {
   getRunEvents,
   listRuns,
 } from "./runs-store";
-import { startRun, cancelRun, subscribeRun, isRunActive, resolvePermission, listPendingPermissions } from "./run-manager";
+import { startRun, cancelRun, subscribeRun, isRunActive, resolvePermission, listPendingPermissions, resolveErrorRecovery, getPendingErrorRecovery } from "./run-manager";
 import {
   createSkillInRoot,
   deleteSkillDocument,
@@ -833,6 +835,23 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
   const runPermsParams = match(pathname, "/api/runs/:id/permissions");
   if (runPermsParams && method === "GET") {
     const pending = listPendingPermissions(runPermsParams.id ?? "");
+    return json({ ok: true, pending });
+  }
+
+  // POST /api/runs/:id/error-recovery — resolve a paused error recovery decision
+  const runErrorParams = match(pathname, "/api/runs/:id/error-recovery");
+  if (runErrorParams && method === "POST") {
+    const body = await readJsonBody<{ action: "retry" | "skip" | "abort" }>(req);
+    if (!body?.action || !["retry", "skip", "abort"].includes(body.action)) {
+      return badRequest("`action` must be 'retry', 'skip', or 'abort'");
+    }
+    const resolved = resolveErrorRecovery(runErrorParams.id ?? "", body.action);
+    return json({ ok: resolved });
+  }
+
+  // GET /api/runs/:id/error-recovery — get pending error recovery state
+  if (runErrorParams && method === "GET") {
+    const pending = getPendingErrorRecovery(runErrorParams.id ?? "");
     return json({ ok: true, pending });
   }
 

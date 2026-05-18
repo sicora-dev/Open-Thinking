@@ -38,6 +38,12 @@ export type RunEvent = {
   payload: unknown;
 };
 
+type ErrorRecoveryGate = {
+  stageName: string;
+  error: string;
+  resolve: (action: "retry" | "skip" | "abort") => void;
+};
+
 type ActiveRun = {
   runId: string;
   controller: AbortController;
@@ -45,6 +51,7 @@ type ActiveRun = {
   startedAtMs: number;
   subscribers: Set<(evt: RunEvent) => void>;
   permissionEngine?: import("../../core/permissions").PermissionEngine;
+  pendingErrorRecovery?: ErrorRecoveryGate;
 };
 
 const active = new Map<string, ActiveRun>();
@@ -80,6 +87,29 @@ export function resolvePermission(
   const a = active.get(runId);
   if (!a?.permissionEngine) return false;
   return a.permissionEngine.confirmations().resolve(requestId, { action, remember });
+}
+
+/**
+ * Resolve a pending error recovery decision for an active run.
+ */
+export function resolveErrorRecovery(
+  runId: string,
+  action: "retry" | "skip" | "abort",
+): boolean {
+  const a = active.get(runId);
+  if (!a?.pendingErrorRecovery) return false;
+  a.pendingErrorRecovery.resolve(action);
+  a.pendingErrorRecovery = undefined;
+  return true;
+}
+
+/**
+ * Get the pending error recovery state for an active run, if any.
+ */
+export function getPendingErrorRecovery(runId: string): { stageName: string; error: string } | null {
+  const a = active.get(runId);
+  if (!a?.pendingErrorRecovery) return null;
+  return { stageName: a.pendingErrorRecovery.stageName, error: a.pendingErrorRecovery.error };
 }
 
 /**
@@ -245,6 +275,14 @@ export async function startRun(
   });
   runState.permissionEngine = permissionEngine;
 
+  // Error recovery callback for UI: blocks until the UI posts an action
+  async function onStageError(stageName: string, error: string): Promise<"retry" | "skip" | "abort"> {
+    return new Promise<"retry" | "skip" | "abort">((resolve) => {
+      runState.pendingErrorRecovery = { stageName, error, resolve };
+      emitRunEvent(runState, "stage:error-paused", { stageName, error });
+    });
+  }
+
   // Run in the background — do NOT await before returning.
   (async () => {
     try {
@@ -258,6 +296,7 @@ export async function startRun(
         skillsDir,
         signal: controller.signal,
         permissionEngine,
+        onStageError,
       });
 
       if (!result.ok) {

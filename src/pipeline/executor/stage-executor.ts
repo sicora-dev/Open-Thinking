@@ -56,6 +56,12 @@ export type ExecutorDeps = {
    * changes to the real filesystem, or "discard" to throw them away.
    */
   onSandboxReview?: (stageName: string, sandbox: Sandbox) => Promise<"apply" | "discard">;
+  /**
+   * Callback invoked when a stage fails after all retries are exhausted.
+   * Return "retry" to try once more, "skip" to skip the stage, or
+   * "abort" to stop the pipeline.
+   */
+  onStageError?: (stageName: string, error: string) => Promise<ErrorRecoveryAction>;
 };
 
 /**
@@ -525,12 +531,58 @@ function isRateLimitFailure(result: StageResult): boolean {
   return result.error.includes("RATE_LIMIT") || result.error.includes("429");
 }
 
+/** Base delay for exponential backoff between retries (ms). */
+const RETRY_BASE_DELAY_MS = 1000;
+/** Max delay cap for exponential backoff (ms). */
+const RETRY_MAX_DELAY_MS = 30_000;
+
 /**
- * Execute a stage with retry support and model fallback chain.
+ * Compute exponential backoff delay with jitter.
+ * delay = min(base * 2^attempt + random jitter, maxDelay)
+ */
+function retryDelay(attempt: number): number {
+  const exponential = RETRY_BASE_DELAY_MS * 2 ** attempt;
+  const jitter = Math.random() * RETRY_BASE_DELAY_MS;
+  return Math.min(exponential + jitter, RETRY_MAX_DELAY_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Rollback context to the most recent auto-snapshot for a stage.
+ * Returns true if rollback was performed.
+ */
+function rollbackContext(
+  contextStore: ContextStore,
+  stageName: string,
+): boolean {
+  if (!("listSnapshots" in contextStore)) return false;
+  const store = contextStore as ReturnType<typeof import("../../context/store").createContextStore>;
+  const snapshots = store.listSnapshots();
+  if (!snapshots.ok) return false;
+
+  // Find the most recent auto-snapshot for this stage
+  const autoSnap = snapshots.value.find((s) => s.name === `auto:before:${stageName}`);
+  if (!autoSnap) return false;
+
+  const result = store.restoreSnapshot(autoSnap.id);
+  return result.ok;
+}
+
+/** Possible outcomes when the user is asked what to do on stage error. */
+export type ErrorRecoveryAction = "retry" | "skip" | "abort";
+
+/**
+ * Execute a stage with retry support, exponential backoff, context
+ * rollback, model fallback chain, and pause-on-error.
  *
- * 1. Run the stage with its primary model (retries are handled at the HTTP level by the adapter)
- * 2. If it fails with on_fail config, retry the stage itself
- * 3. If it still fails with a RATE_LIMIT error and fallback_models are defined, try the next model
+ * 1. Run the stage with its primary model
+ * 2. If it fails with on_fail config, retry with exponential backoff
+ *    and context rollback between attempts
+ * 3. If still failing due to rate limits and fallback_models exist, try next model
+ * 4. If still failing and onStageError callback exists, pause and ask the user
  */
 async function executeStageWithRetry(
   stageName: string,
@@ -539,11 +591,28 @@ async function executeStageWithRetry(
 ): Promise<StageResult> {
   let result = await executeStage(stageName, stageDef, deps);
 
-  // Stage-level retries (on_fail config)
+  // Stage-level retries (on_fail config) with exponential backoff
   if (result.status === "failed" && stageDef.on_fail) {
     const { max_retries, inject_context } = stageDef.on_fail;
 
     for (let attempt = 0; attempt < max_retries && result.status === "failed"; attempt++) {
+      // Exponential backoff
+      const delay = retryDelay(attempt);
+      deps.eventBus.emit({
+        type: "stage:warning",
+        stageName,
+        message: `Retry ${attempt + 1}/${max_retries} in ${Math.round(delay / 1000)}s...`,
+      });
+      await sleep(delay);
+
+      // Check for cancellation during backoff
+      if (deps.signal?.aborted) {
+        return { stageName, status: "cancelled", durationMs: 0, contextKeysWritten: [] };
+      }
+
+      // Rollback context to pre-stage state
+      rollbackContext(deps.contextStore, stageName);
+
       if (inject_context && result.error) {
         await deps.contextStore.set(inject_context, result.error, stageName);
       }
@@ -565,14 +634,29 @@ async function executeStageWithRetry(
         toModel: fallbackModel,
       });
 
-      // Create a modified stage def with the fallback model
+      // Rollback context before trying with fallback model
+      rollbackContext(deps.contextStore, stageName);
+
       const fallbackDef = { ...stageDef, model: fallbackModel };
       result = await executeStage(stageName, fallbackDef, deps);
 
       if (result.status !== "failed" || !isRateLimitFailure(result)) {
-        break; // Either succeeded or failed for a non-rate-limit reason
+        break;
       }
     }
+  }
+
+  // Pause-on-error: if still failed and callback exists, ask the user
+  if (result.status === "failed" && deps.onStageError) {
+    const action = await deps.onStageError(stageName, result.error ?? "Unknown error");
+
+    if (action === "retry") {
+      rollbackContext(deps.contextStore, stageName);
+      result = await executeStage(stageName, stageDef, deps);
+    } else if (action === "skip") {
+      return { ...result, status: "skipped" };
+    }
+    // "abort" — leave the result as failed, pipeline will stop
   }
 
   return result;
