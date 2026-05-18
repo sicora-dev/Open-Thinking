@@ -1,1 +1,6 @@
-export { createContextStore, type ContextStoreConfig } from "./context-store";
+export {
+  createContextStore,
+  type ContextStoreConfig,
+  type ContextSnapshot,
+  type ContextSnapshotFull,
+} from "./context-store";

@@ -45,6 +45,18 @@ const CREATE_TABLE_SQL = `
   )
 `;
 
+const CREATE_SNAPSHOTS_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS context_snapshots (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    entry_count INTEGER NOT NULL,
+    data TEXT NOT NULL
+  )
+`;
+
 const UPSERT_SQL = `
   INSERT INTO context_entries (key, value, created_by, created_at, expires_at)
   VALUES ($key, $value, $created_by, $created_at, $expires_at)
@@ -62,6 +74,38 @@ const LIST_ALL_SQL = "SELECT * FROM context_entries";
 const CLEAR_SQL = "DELETE FROM context_entries";
 const PURGE_EXPIRED_SQL =
   "DELETE FROM context_entries WHERE expires_at IS NOT NULL AND expires_at < $now";
+
+// Snapshot SQL
+const INSERT_SNAPSHOT_SQL = `
+  INSERT INTO context_snapshots (id, name, description, created_at, created_by, entry_count, data)
+  VALUES ($id, $name, $description, $created_at, $created_by, $entry_count, $data)
+`;
+const SELECT_SNAPSHOT_SQL = "SELECT * FROM context_snapshots WHERE id = $id";
+const LIST_SNAPSHOTS_SQL = "SELECT id, name, description, created_at, created_by, entry_count FROM context_snapshots ORDER BY created_at DESC";
+const DELETE_SNAPSHOT_SQL = "DELETE FROM context_snapshots WHERE id = $id";
+
+export type ContextSnapshot = {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  createdBy: string;
+  entryCount: number;
+};
+
+export type ContextSnapshotFull = ContextSnapshot & {
+  entries: Array<{ key: string; value: string; createdBy: string }>;
+};
+
+type SnapshotRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  created_by: string;
+  entry_count: number;
+  data?: string;
+};
 
 type Row = {
   key: string;
@@ -90,11 +134,22 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
   inspect(): Result<ContextEntry[]>;
   purgeExpired(): Result<number>;
   close(): void;
+  /** Save a snapshot of the current context state. */
+  saveSnapshot(name: string, createdBy: string, description?: string): Result<ContextSnapshot>;
+  /** Restore context from a snapshot (replaces current entries). */
+  restoreSnapshot(snapshotId: string): Result<{ restored: number }>;
+  /** List all snapshots (metadata only). */
+  listSnapshots(): Result<ContextSnapshot[]>;
+  /** Delete a snapshot by ID. */
+  deleteSnapshot(snapshotId: string): Result<boolean>;
+  /** Get a snapshot with its full entry data. */
+  getSnapshot(snapshotId: string): Result<ContextSnapshotFull | null>;
 } {
   const { dbPath, defaultTtlMs } = config;
   const db = new Database(dbPath);
   db.prepare("PRAGMA journal_mode = WAL").run();
   db.prepare(CREATE_TABLE_SQL).run();
+  db.prepare(CREATE_SNAPSHOTS_TABLE_SQL).run();
 
   const stmtUpsert = db.prepare(UPSERT_SQL);
   const stmtSelect = db.prepare(SELECT_SQL);
@@ -182,6 +237,116 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
     }
   }
 
+  // ─── Snapshot methods ───────────────────────────────────
+
+  const stmtInsertSnapshot = db.prepare(INSERT_SNAPSHOT_SQL);
+  const stmtSelectSnapshot = db.prepare(SELECT_SNAPSHOT_SQL);
+  const stmtListSnapshots = db.prepare(LIST_SNAPSHOTS_SQL);
+  const stmtDeleteSnapshot = db.prepare(DELETE_SNAPSHOT_SQL);
+
+  function saveSnapshot(
+    name: string,
+    createdBy: string,
+    description?: string,
+  ): Result<ContextSnapshot> {
+    try {
+      const rows = stmtListAll.all() as Row[];
+      const entries = rows.filter((r) => !isExpired(r)).map((r) => ({
+        key: r.key,
+        value: r.value,
+        createdBy: r.created_by,
+      }));
+
+      const id = crypto.randomUUID().slice(0, 8);
+      const now = new Date().toISOString();
+
+      stmtInsertSnapshot.run({
+        $id: id,
+        $name: name,
+        $description: description ?? null,
+        $created_at: now,
+        $created_by: createdBy,
+        $entry_count: entries.length,
+        $data: JSON.stringify(entries),
+      });
+
+      return ok({ id, name, description, createdAt: now, createdBy, entryCount: entries.length });
+    } catch (e) {
+      return err(new ContextError(e instanceof Error ? e.message : String(e), "WRITE_ERROR"));
+    }
+  }
+
+  function restoreSnapshot(snapshotId: string): Result<{ restored: number }> {
+    try {
+      const row = stmtSelectSnapshot.get({ $id: snapshotId }) as SnapshotRow | null;
+      if (!row) return err(new ContextError(`Snapshot not found: ${snapshotId}`, "READ_ERROR"));
+
+      const entries = JSON.parse(row.data!) as Array<{ key: string; value: string; createdBy: string }>;
+
+      // Clear current context and restore from snapshot
+      stmtClear.run();
+      const now = new Date().toISOString();
+      for (const entry of entries) {
+        stmtUpsert.run({
+          $key: entry.key,
+          $value: entry.value,
+          $created_by: entry.createdBy,
+          $created_at: now,
+          $expires_at: defaultTtlMs ? new Date(Date.now() + defaultTtlMs).toISOString() : null,
+        });
+      }
+
+      return ok({ restored: entries.length });
+    } catch (e) {
+      return err(new ContextError(e instanceof Error ? e.message : String(e), "READ_ERROR"));
+    }
+  }
+
+  function listSnapshots(): Result<ContextSnapshot[]> {
+    try {
+      const rows = stmtListSnapshots.all() as SnapshotRow[];
+      return ok(rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        description: r.description ?? undefined,
+        createdAt: r.created_at,
+        createdBy: r.created_by,
+        entryCount: r.entry_count,
+      })));
+    } catch (e) {
+      return err(new ContextError(e instanceof Error ? e.message : String(e), "READ_ERROR"));
+    }
+  }
+
+  function deleteSnapshot(snapshotId: string): Result<boolean> {
+    try {
+      stmtDeleteSnapshot.run({ $id: snapshotId });
+      const result = db.prepare("SELECT changes() as c").get() as { c: number };
+      return ok(result.c > 0);
+    } catch (e) {
+      return err(new ContextError(e instanceof Error ? e.message : String(e), "WRITE_ERROR"));
+    }
+  }
+
+  function getSnapshot(snapshotId: string): Result<ContextSnapshotFull | null> {
+    try {
+      const row = stmtSelectSnapshot.get({ $id: snapshotId }) as SnapshotRow | null;
+      if (!row) return ok(null);
+      const entries = JSON.parse(row.data!) as Array<{ key: string; value: string; createdBy: string }>;
+      return ok({
+        id: row.id,
+        name: row.name,
+        description: row.description ?? undefined,
+        createdAt: row.created_at,
+        createdBy: row.created_by,
+        entryCount: row.entry_count,
+        entries,
+      });
+    } catch (e) {
+      return err(new ContextError(e instanceof Error ? e.message : String(e), "READ_ERROR"));
+    }
+  }
+
   function close(): void {
     db.close();
   }
@@ -195,5 +360,10 @@ export function createContextStore(config: ContextStoreConfig): ContextStore & {
     inspect,
     purgeExpired,
     close,
+    saveSnapshot,
+    restoreSnapshot,
+    listSnapshots,
+    deleteSnapshot,
+    getSnapshot,
   };
 }
