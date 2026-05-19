@@ -29,7 +29,12 @@ import {
   readLearned,
   readRecentHistory,
 } from "../../workspace";
-import { type AgentLoopConfig, type AgentLoopResult, runAgentLoop } from "./agent-loop";
+import {
+  type AgentLoopConfig,
+  type AgentLoopResult,
+  type WorkSummary,
+  runAgentLoop,
+} from "./agent-loop";
 
 export type ExecutorDeps = {
   config: PipelineConfig;
@@ -232,6 +237,57 @@ function formatBytesShort(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function mergeWorkSummaries(...summaries: Array<WorkSummary | undefined>): WorkSummary {
+  const filesWritten = new Set<string>();
+  const commandsRun = new Set<string>();
+
+  for (const summary of summaries) {
+    for (const file of summary?.filesWritten ?? []) filesWritten.add(file);
+    for (const command of summary?.commandsRun ?? []) commandsRun.add(command);
+  }
+
+  return {
+    filesWritten: [...filesWritten],
+    commandsRun: [...commandsRun],
+  };
+}
+
+function hasRecordedWork(summary: WorkSummary): boolean {
+  return summary.filesWritten.length > 0 || summary.commandsRun.length > 0;
+}
+
+function normalizePromptText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
+function promptRequiresFileWrite(prompt: string): boolean {
+  const text = normalizePromptText(prompt);
+  const action =
+    /\b(crea|crear|creame|genera|generar|haz|hacer|escribe|escribir|guarda|guardar|modifica|modificar|edita|editar|actualiza|actualizar|cambia|cambiar|corrige|corregir|arregla|arreglar|create|generate|write|save|modify|edit|update|fix)\b/.test(
+      text,
+    );
+  const artifact =
+    /\b(archivo|fichero|documento|csv|json|txt|md|markdown|html|css|js|jsx|ts|tsx|py|xml|yaml|yml|sql|xlsx|excel|readme|package)\b/.test(
+      text,
+    );
+  return action && artifact;
+}
+
+function validateOrchestratedWork(inputPrompt: string, summary: WorkSummary): string | null {
+  if (promptRequiresFileWrite(inputPrompt) && summary.filesWritten.length === 0) {
+    return "The user requested creating or modifying a file, but no agent wrote any file. The pipeline produced text only instead of creating the requested artifact in the workspace.";
+  }
+
+  if (!hasRecordedWork(summary)) {
+    return "Orchestrated run finished without any recorded work. At least one delegated agent must create or modify files, or run a command that performs the requested project work.";
+  }
+
+  return null;
 }
 
 /**
@@ -763,6 +819,7 @@ async function executeStageWithDelegateTool(
     contextResult.value,
     stageDef.context.eager === true,
   );
+  const inputPrompt = contextResult.value["input.prompt"] ?? "";
 
   // Load skill
   const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
@@ -770,6 +827,11 @@ async function executeStageWithDelegateTool(
   // Orchestrator only gets the delegate tool — no filesystem tools.
   // If it could read/write files, it would do everything itself and never delegate.
   let delegated = false;
+  let delegatedWorkSummary: WorkSummary = { filesWritten: [], commandsRun: [] };
+  const unsubscribeDelegateComplete = eventBus.on("delegate:complete", (evt) => {
+    if (evt.type !== "delegate:complete") return;
+    delegatedWorkSummary = mergeWorkSummaries(delegatedWorkSummary, evt.result.workSummary);
+  });
   const orchestratorRegistry = {
     definitions: () => [{ name: delegateTool.name, description: delegateTool.description, parameters: delegateTool.parameters }],
     execute: async (name: string, args: Record<string, unknown>) => {
@@ -821,6 +883,7 @@ async function executeStageWithDelegateTool(
     onTokenLimit: deps.onTokenLimit ? (summary) => deps.onTokenLimit!(stageName, summary) : undefined,
     requireToolCallOnFirstIteration: true,
   });
+  unsubscribeDelegateComplete();
 
   if (!loopResult.ok) {
     eventBus.emit({ type: "stage:error", stageName, error: loopResult.error.message });
@@ -828,6 +891,7 @@ async function executeStageWithDelegateTool(
   }
 
   const agentResult = loopResult.value;
+  const combinedWorkSummary = mergeWorkSummaries(agentResult.workSummary, delegatedWorkSummary);
   if (!delegated) {
     const error =
       "Orchestrator finished without delegating any task. Ensure the model supports tool calling and that the orchestrator skill was loaded.";
@@ -839,6 +903,7 @@ async function executeStageWithDelegateTool(
       error,
       usage: agentResult.totalUsage,
       contextKeysWritten: [],
+      workSummary: combinedWorkSummary,
     };
   }
 
@@ -848,6 +913,24 @@ async function executeStageWithDelegateTool(
   if (!costCheck.ok) {
     eventBus.emit({ type: "stage:error", stageName, error: costCheck.error.message });
     return { stageName, status: "failed", durationMs: Date.now() - start, error: costCheck.error.message, usage: agentResult.totalUsage, cost, contextKeysWritten: [] };
+  }
+
+  const workError = validateOrchestratedWork(inputPrompt, combinedWorkSummary);
+  if (workError) {
+    eventBus.emit({ type: "stage:error", stageName, error: workError });
+    return {
+      stageName,
+      status: "failed",
+      output: agentResult.finalContent,
+      usage: agentResult.totalUsage,
+      breakdown: agentResult.breakdown,
+      cost,
+      durationMs: Date.now() - start,
+      error: workError,
+      contextKeysWritten: [],
+      stopReason: agentResult.stopReason,
+      workSummary: combinedWorkSummary,
+    };
   }
 
   // Write orchestrator output to context
@@ -864,7 +947,7 @@ async function executeStageWithDelegateTool(
     durationMs: Date.now() - start,
     contextKeysWritten,
     stopReason: agentResult.stopReason,
-    workSummary: agentResult.workSummary,
+    workSummary: combinedWorkSummary,
   };
 
   eventBus.emit({ type: "stage:complete", result });

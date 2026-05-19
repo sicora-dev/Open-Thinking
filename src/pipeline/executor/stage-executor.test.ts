@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
@@ -32,6 +32,23 @@ function mockProvider(content: string): LLMProvider {
     chat: mock(() => Promise.resolve(ok(response))),
     stream: async function* (): AsyncGenerator<StreamChunk> {
       yield { type: "content", delta: content };
+      yield { type: "done" };
+    },
+    listModels: mock(() => Promise.resolve(ok([]))),
+    healthCheck: mock(() => Promise.resolve(ok(true))),
+  };
+}
+
+function mockSequencedProvider(responses: ChatResponse[]): LLMProvider {
+  let callIndex = 0;
+  return {
+    name: "mock",
+    chat: mock(() => {
+      const response = responses[callIndex] ?? responses[responses.length - 1];
+      callIndex += 1;
+      return Promise.resolve(ok(response as ChatResponse));
+    }),
+    stream: async function* (): AsyncGenerator<StreamChunk> {
       yield { type: "done" };
     },
     listModels: mock(() => Promise.resolve(ok([]))),
@@ -404,54 +421,59 @@ describe("executePipeline (orchestrated)", () => {
   });
 
   test("runs orchestrator and delegates work in orchestrated mode", async () => {
-    let callCount = 0;
-    const provider: LLMProvider = {
-      ...mockProvider("Orchestration complete"),
-      chat: mock(() => {
-        callCount += 1;
-        if (callCount === 1) {
-          return Promise.resolve(
-            ok({
-              id: "1",
-              model: "m",
-              content: "",
-              toolCalls: [
-                {
-                  id: "delegate-1",
-                  type: "function",
-                  function: {
-                    name: "delegate",
-                    arguments: JSON.stringify({ agent: "coder", task: "Implement the task" }),
-                  },
-                },
-              ],
-              usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
-              finishReason: "tool_calls" as const,
-            }),
-          );
-        }
-        if (callCount === 2) {
-          return Promise.resolve(
-            ok({
-              id: "2",
-              model: "m",
-              content: "implemented",
-              usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
-              finishReason: "stop" as const,
-            }),
-          );
-        }
-        return Promise.resolve(
-          ok({
-            id: "3",
-            model: "m",
-            content: "Orchestration complete",
-            usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
-            finishReason: "stop" as const,
-          }),
-        );
-      }),
-    };
+    const provider = mockSequencedProvider([
+      {
+        id: "1",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "delegate-1",
+            type: "function",
+            function: {
+              name: "delegate",
+              arguments: JSON.stringify({ agent: "coder", task: "Implement the task" }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "2",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "write-1",
+            type: "function",
+            function: {
+              name: "write_file",
+              arguments: JSON.stringify({
+                path: "implementation.txt",
+                content: "implemented",
+              }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "3",
+        model: "m",
+        content: "implemented",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+      {
+        id: "4",
+        model: "m",
+        content: "Orchestration complete",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+    ]);
     const config = makePipelineConfig(
       {
         orchestrator: {
@@ -464,7 +486,7 @@ describe("executePipeline (orchestrated)", () => {
         coder: {
           provider: "mock",
           model: "gpt-4",
-          skill: "core/coder",
+          skill: "core/code-writer",
           context: { read: ["*"], write: ["coder.*"] },
         },
       },
@@ -481,6 +503,8 @@ describe("executePipeline (orchestrated)", () => {
     expect(result.value.stages).toHaveLength(1);
     expect(result.value.stages[0].stageName).toBe("orchestrator");
     expect(result.value.stages[0].status).toBe("success");
+    expect(result.value.stages[0].workSummary?.filesWritten).toEqual(["implementation.txt"]);
+    expect(existsSync(join(deps.workingDir, "implementation.txt"))).toBe(true);
 
     store.close();
   });
@@ -562,6 +586,244 @@ describe("executePipeline (orchestrated)", () => {
 
     expect(receivedTools).toContain("delegate");
     expect(receivedToolChoice).toBe("required");
+
+    store.close();
+  });
+
+  test("fails an orchestrated artifact request when delegates only return text", async () => {
+    await store.set("input.prompt", "Crea un csv con 20 chistes españoles originales", "user");
+    const provider = mockSequencedProvider([
+      {
+        id: "1",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "delegate-1",
+            type: "function",
+            function: {
+              name: "delegate",
+              arguments: JSON.stringify({ agent: "coder", task: "Create the requested CSV" }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "2",
+        model: "m",
+        content: 'id,chiste\n1,"texto devuelto, pero no escrito"',
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+      {
+        id: "3",
+        model: "m",
+        content: "Done",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+    ]);
+
+    const config = makePipelineConfig(
+      {
+        orchestrator: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/orchestrator",
+          role: "orchestrator",
+          context: { read: ["*"], write: ["orchestrator.*"] },
+        },
+        coder: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/code-writer",
+          context: { read: ["*"], write: ["coder.*"] },
+        },
+      },
+      { mode: "orchestrated" },
+    );
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    const result = await executePipeline(deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.status).toBe("failed");
+    expect(result.value.stages[0]?.error).toContain("no agent wrote any file");
+
+    store.close();
+  });
+
+  test("fails an orchestrated file creation request when only a command was run", async () => {
+    await store.set("input.prompt", "Crea un csv con 20 chistes españoles originales", "user");
+    const provider = mockSequencedProvider([
+      {
+        id: "1",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "delegate-1",
+            type: "function",
+            function: {
+              name: "delegate",
+              arguments: JSON.stringify({ agent: "coder", task: "Create the requested CSV" }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "2",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "cmd-1",
+            type: "function",
+            function: {
+              name: "run_command",
+              arguments: JSON.stringify({ command: "echo hello" }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "3",
+        model: "m",
+        content: "Command ran, but no CSV file was written",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+      {
+        id: "4",
+        model: "m",
+        content: "Done",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+    ]);
+
+    const config = makePipelineConfig(
+      {
+        orchestrator: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/orchestrator",
+          role: "orchestrator",
+          context: { read: ["*"], write: ["orchestrator.*"] },
+        },
+        coder: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/code-writer",
+          context: { read: ["*"], write: ["coder.*"] },
+        },
+      },
+      { mode: "orchestrated" },
+    );
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    const result = await executePipeline(deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.status).toBe("failed");
+    expect(result.value.stages[0]?.workSummary?.commandsRun).toEqual(["echo hello"]);
+    expect(result.value.stages[0]?.error).toContain("no agent wrote any file");
+
+    store.close();
+  });
+
+  test("passes orchestrated artifact requests when a delegate writes the file", async () => {
+    await store.set("input.prompt", "Crea un csv con 20 chistes españoles originales", "user");
+    const provider = mockSequencedProvider([
+      {
+        id: "1",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "delegate-1",
+            type: "function",
+            function: {
+              name: "delegate",
+              arguments: JSON.stringify({ agent: "coder", task: "Write jokes.csv" }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "2",
+        model: "m",
+        content: "",
+        toolCalls: [
+          {
+            id: "write-1",
+            type: "function",
+            function: {
+              name: "write_file",
+              arguments: JSON.stringify({
+                path: "jokes.csv",
+                content: 'id,chiste\n1,"Uno"',
+              }),
+            },
+          },
+        ],
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "tool_calls",
+      },
+      {
+        id: "3",
+        model: "m",
+        content: "Created jokes.csv",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+      {
+        id: "4",
+        model: "m",
+        content: "Done: jokes.csv",
+        usage: { promptTokens: 5, completionTokens: 10, totalTokens: 15 },
+        finishReason: "stop",
+      },
+    ]);
+
+    const config = makePipelineConfig(
+      {
+        orchestrator: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/orchestrator",
+          role: "orchestrator",
+          context: { read: ["*"], write: ["orchestrator.*"] },
+        },
+        coder: {
+          provider: "mock",
+          model: "gpt-4",
+          skill: "core/code-writer",
+          context: { read: ["*"], write: ["coder.*"] },
+        },
+      },
+      { mode: "orchestrated" },
+    );
+
+    const deps = makeDeps(config, { mock: provider }, store);
+    const result = await executePipeline(deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.status).toBe("success");
+    expect(result.value.stages[0]?.workSummary?.filesWritten).toEqual(["jokes.csv"]);
+    expect(existsSync(join(deps.workingDir, "jokes.csv"))).toBe(true);
+    expect(readFileSync(join(deps.workingDir, "jokes.csv"), "utf-8")).toContain("id,chiste");
 
     store.close();
   });

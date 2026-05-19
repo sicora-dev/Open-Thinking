@@ -259,6 +259,11 @@ function buildDelegateSummary(
   if (work.commandsRun.length > 0) {
     lines.push(`Commands run: ${work.commandsRun.length}`);
   }
+  if (work.filesWritten.length === 0 && work.commandsRun.length === 0) {
+    lines.push(
+      "No files were written and no commands were run. This is not a completed implementation for a task that should create or modify workspace artifacts.",
+    );
+  }
 
   lines.push("", "--- Output preview ---", preview);
   return lines.join("\n");
