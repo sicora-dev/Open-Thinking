@@ -22,7 +22,7 @@
   <a href="https://nodejs.org/">
     <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node >= 20" />
   </a>
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb" alt="Windows, macOS et Linux" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-1f6feb" alt="macOS et Linux" />
 </p>
 
 <p align="center">
@@ -126,7 +126,7 @@ stages:
 ## Prérequis
 
 - Node.js >= 20
-- Windows 10/11, macOS ou Linux
+- macOS ou Linux
 - [Bun](https://bun.sh) >= 1.1.0 pour le développement local et les builds de release
 
 ## Installation

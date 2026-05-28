@@ -22,7 +22,6 @@ export function Files() {
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [pipelines, setPipelines] = useState<PipelineEntry[]>([]);
   const [preview, setPreview] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<string | null | "binary" | "tooBig">(null);
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,7 +35,6 @@ export function Files() {
       setEntries(result.entries);
       setSelected(null);
       setPreview(null);
-      setFileContent(null);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -77,24 +75,14 @@ export function Files() {
 
     setSelected(entry);
     setPreview(null);
-    setFileContent(null);
-
     const pipeline = pipelines.find((item) => item.path === entry.path);
-    if (pipeline) {
-      try {
-        const result = await api.getPipeline(pipeline.id);
-        setPreview(result.yaml);
-      } catch (e) {
-        setError((e as Error).message);
-      }
-      return;
-    }
+    if (!pipeline) return;
 
     try {
-      const result = await api.readFile(entry.path);
-      setFileContent(result.tooBig ? "tooBig" : result.content);
-    } catch {
-      setFileContent("binary");
+      const result = await api.getPipeline(pipeline.id);
+      setPreview(result.yaml);
+    } catch (e) {
+      setError((e as Error).message);
     }
   };
 
@@ -169,7 +157,7 @@ export function Files() {
         </div>
         <div style={{ padding: "16px 20px" }}>
           {!selected ? (
-            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>Select a file to preview its contents.</div>
+            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>Select a registered pipeline YAML file to preview it.</div>
           ) : preview != null ? (
             <pre style={{
               maxWidth: 900, fontFamily: "var(--font-mono)", fontSize: 12.5,
@@ -177,20 +165,11 @@ export function Files() {
             }}>
               {preview}
             </pre>
-          ) : fileContent === "tooBig" ? (
-            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>File is too large to preview (&gt;1 MB).</div>
-          ) : fileContent === "binary" ? (
-            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>Binary file — cannot preview.</div>
-          ) : fileContent != null ? (
-            <pre style={{
-              maxWidth: 900, fontFamily: "var(--font-mono)", fontSize: 12.5,
-              lineHeight: 1.55, color: "var(--fg)", margin: 0, whiteSpace: "pre-wrap",
-            }}>
-              {fileContent}
-            </pre>
-          ) : selected ? (
-            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>Loading…</div>
-          ) : null}
+          ) : (
+            <div style={{ color: "var(--fg-muted)", fontSize: 13 }}>
+              Preview is available for files registered as pipelines.
+            </div>
+          )}
         </div>
       </div>
     </div>
