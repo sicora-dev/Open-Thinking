@@ -7,11 +7,15 @@
 
 export type PipelineMode = "sequential" | "orchestrated";
 
+export type PermissionModeSetting = "auto" | "sandbox" | "confirm" | "strict";
+
 export type PipelineConfig = {
   name: string;
   version: string;
   /** Execution mode. "sequential" = static DAG, "orchestrated" = LLM-driven routing. Default: "sequential". */
   mode: PipelineMode;
+  /** Default permission mode for all stages. Can be overridden per-stage. Default: "confirm". */
+  permissions?: PermissionModeSetting;
   context: ContextConfig;
   /** Resolved providers keyed by provider ID (e.g., "openai", "anthropic"). */
   providers: Record<string, ResolvedProvider>;
@@ -78,6 +82,8 @@ export type StageDefinition = {
   /** Alternative models to try when the primary model is rate-limited after exhausting retries. */
   fallback_models?: string[];
   on_fail?: FailureConfig;
+  /** Override permission mode for this stage. Inherits from pipeline if omitted. */
+  permissions?: PermissionModeSetting;
 };
 
 export type StageContextPermissions = {
@@ -286,6 +292,8 @@ export type StageResult = {
   stopReason?: "done" | "cancelled" | "max_iterations" | "token_limit" | "error";
   /** Files written and commands run during the stage. */
   workSummary?: { filesWritten: string[]; commandsRun: string[] };
+  /** Whether sandbox changes were applied (only set when stage ran in sandbox mode). */
+  sandboxApplied?: boolean;
 };
 
 export type PipelineRunResult = {
@@ -339,4 +347,24 @@ export type PipelineEvent =
   /** Emitted when an agent enters a "thinking" wait — UI may show a spinner with funny text. */
   | { type: "thinking:start"; stageName: string }
   /** Emitted when the wait ends (response received, tool call, or error). */
-  | { type: "thinking:end"; stageName: string };
+  | { type: "thinking:end"; stageName: string }
+  // ─── Permission events ──────────────────────────────────
+  /** A tool action requires human confirmation before executing. */
+  | {
+      type: "permission:request";
+      request: {
+        id: string;
+        tool: string;
+        args: Record<string, unknown>;
+        risk: "safe" | "moderate" | "dangerous";
+        description: string;
+        subject: string;
+      };
+      stageName: string;
+    }
+  /** A permission request was granted. */
+  | { type: "permission:granted"; requestId: string; stageName: string; remembered: boolean }
+  /** A permission request was denied. */
+  | { type: "permission:denied"; requestId: string; stageName: string; remembered: boolean }
+  /** A tool action was auto-allowed (safe action or auto mode). */
+  | { type: "permission:auto-allowed"; tool: string; subject: string; stageName: string };

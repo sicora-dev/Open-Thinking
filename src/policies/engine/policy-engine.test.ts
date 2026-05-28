@@ -23,6 +23,12 @@ describe("matchGlob", () => {
     expect(matchGlob("*.files", "code.files")).toBe(true);
   });
 
+  test('root "*" matches all context keys for backwards compatibility', () => {
+    expect(matchGlob("*", "input.prompt")).toBe(true);
+    expect(matchGlob("*", "architect.output")).toBe(true);
+    expect(matchGlob("*", "nested.context.key")).toBe(true);
+  });
+
   test("* does not match multiple segments", () => {
     expect(matchGlob("plan.*", "plan.arch.detail")).toBe(false);
   });

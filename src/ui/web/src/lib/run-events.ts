@@ -65,6 +65,15 @@ type Payload = Record<string, unknown> & {
   error?: string;
   rule?: string;
   detail?: string;
+  remembered?: boolean;
+  requestId?: string;
+  request?: {
+    id?: string;
+    tool?: string;
+    risk?: "safe" | "moderate" | "dangerous";
+    description?: string;
+    subject?: string;
+  };
   result?: Record<string, unknown> & {
     stageName?: string;
     status?: StageProjection["status"];
@@ -101,6 +110,10 @@ const EVENT_LEVEL: Record<string, ProjectedLogLine["level"]> = {
   "tokens:update": "model",
   "thinking:start": "model",
   "thinking:end": "model",
+  "permission:request": "warn",
+  "permission:granted": "ok",
+  "permission:denied": "err",
+  "permission:auto-allowed": "ok",
   "pipeline:start": "info",
   "pipeline:complete": "ok",
   "run:done": "ok",
@@ -126,6 +139,10 @@ export const RUN_EVENT_TYPES = [
   "tokens:update",
   "thinking:start",
   "thinking:end",
+  "permission:request",
+  "permission:granted",
+  "permission:denied",
+  "permission:auto-allowed",
   "run:done",
   "run:error",
 ];
@@ -323,6 +340,7 @@ function getStageName(type: string, payload: Payload): string | null {
   if (payload.stageName) return payload.stageName;
   if (type === "stage:complete" && payload.result?.stageName) return payload.result.stageName;
   if (type.startsWith("delegate:") && payload.agentName) return payload.agentName;
+  if (type.startsWith("permission:") && payload.stageName) return payload.stageName;
   return null;
 }
 
@@ -342,6 +360,16 @@ function summarizeStageEvent(type: string, payload: Payload): string | null {
   if (type === "tokens:update") return `tokens ${payload.usage?.totalTokens ?? 0}${payload.iteration != null ? ` at iteration ${payload.iteration}` : ""}`;
   if (type === "thinking:start") return "waiting for model";
   if (type === "thinking:end") return "model response received";
+  if (type === "permission:request") {
+    return `permission requested for ${payload.request?.tool ?? "tool"}: ${payload.request?.description ?? ""}`;
+  }
+  if (type === "permission:granted") {
+    return `permission granted${payload.remembered ? " and remembered" : ""}`;
+  }
+  if (type === "permission:denied") {
+    return `permission denied${payload.remembered ? " and remembered" : ""}`;
+  }
+  if (type === "permission:auto-allowed") return `permission auto-allowed for ${payload.tool ?? "tool"}`;
   if (type === "delegate:start") return `delegate started${payload.model ? ` on ${payload.model}` : ""}`;
   if (type === "delegate:complete") return `delegate completed${payload.durationMs ? ` in ${formatDurationMs(payload.durationMs)}` : ""}`;
   if (type === "delegate:error") return `delegate error: ${payload.error ?? ""}`;
@@ -363,6 +391,14 @@ function summarizeEvent(type: string, payload: Payload): string {
   if (type === "tokens:update") return `${payload.stageName ?? "stage"} ${payload.usage?.totalTokens ?? 0} tokens`;
   if (type === "thinking:start") return `${payload.stageName ?? "stage"} waiting for model`;
   if (type === "thinking:end") return `${payload.stageName ?? "stage"} model response received`;
+  if (type === "permission:request") {
+    return `${payload.stageName ?? "stage"} needs permission for ${payload.request?.tool ?? "tool"}: ${payload.request?.description ?? ""}`;
+  }
+  if (type === "permission:granted") return `${payload.stageName ?? "stage"} permission granted`;
+  if (type === "permission:denied") return `${payload.stageName ?? "stage"} permission denied`;
+  if (type === "permission:auto-allowed") {
+    return `${payload.stageName ?? "stage"} auto-allowed ${payload.tool ?? "tool"}`;
+  }
   if (type === "delegate:start") return `${payload.agentName ?? "delegate"} started`;
   if (type === "delegate:complete") return `${payload.agentName ?? "delegate"} completed`;
   if (type === "delegate:error") return `${payload.agentName ?? "delegate"} error: ${payload.error ?? ""}`;

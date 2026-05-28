@@ -15,6 +15,8 @@ import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
+import { createPermissionEngine } from "../../core/permissions";
+import type { PermissionMode } from "../../core/permissions";
 import { executePipeline } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
@@ -36,12 +38,20 @@ export type RunEvent = {
   payload: unknown;
 };
 
+type ErrorRecoveryGate = {
+  stageName: string;
+  error: string;
+  resolve: (action: "retry" | "skip" | "abort") => void;
+};
+
 type ActiveRun = {
   runId: string;
   controller: AbortController;
   seq: number;
   startedAtMs: number;
   subscribers: Set<(evt: RunEvent) => void>;
+  permissionEngine?: import("../../core/permissions").PermissionEngine;
+  pendingErrorRecovery?: ErrorRecoveryGate;
 };
 
 const active = new Map<string, ActiveRun>();
@@ -62,6 +72,65 @@ export function cancelRun(runId: string): boolean {
   if (!a) return false;
   a.controller.abort();
   return true;
+}
+
+/**
+ * Resolve a pending permission request for an active run.
+ * Returns true if the request was found and resolved.
+ */
+export function resolvePermission(
+  runId: string,
+  requestId: string,
+  action: "allow" | "deny",
+  remember: boolean,
+): boolean {
+  const a = active.get(runId);
+  if (!a?.permissionEngine) return false;
+  return a.permissionEngine.confirmations().resolve(requestId, { action, remember });
+}
+
+/**
+ * Resolve a pending error recovery decision for an active run.
+ */
+export function resolveErrorRecovery(
+  runId: string,
+  action: "retry" | "skip" | "abort",
+): boolean {
+  const a = active.get(runId);
+  if (!a?.pendingErrorRecovery) return false;
+  a.pendingErrorRecovery.resolve(action);
+  a.pendingErrorRecovery = undefined;
+  return true;
+}
+
+/**
+ * Get the pending error recovery state for an active run, if any.
+ */
+export function getPendingErrorRecovery(runId: string): { stageName: string; error: string } | null {
+  const a = active.get(runId);
+  if (!a?.pendingErrorRecovery) return null;
+  return { stageName: a.pendingErrorRecovery.stageName, error: a.pendingErrorRecovery.error };
+}
+
+/**
+ * List pending permission requests for an active run.
+ */
+export function listPendingPermissions(runId: string): Array<{
+  id: string;
+  tool: string;
+  risk: string;
+  description: string;
+  subject: string;
+}> {
+  const a = active.get(runId);
+  if (!a?.permissionEngine) return [];
+  return a.permissionEngine.confirmations().pending().map((p) => ({
+    id: p.request.id,
+    tool: p.request.tool,
+    risk: p.request.risk,
+    description: p.request.description,
+    subject: p.request.subject,
+  }));
 }
 
 function emitRunEvent(run: ActiveRun, type: string, payload: unknown): void {
@@ -197,6 +266,23 @@ export async function startRun(
 
   const skillsDir = getProjectSkillsDir(workingDir);
 
+  // Create permission engine for this run (UI resolves via POST /api/runs/:id/permission)
+  const permissionMode: PermissionMode = (config.permissions as PermissionMode) ?? "confirm";
+  const permissionEngine = createPermissionEngine({
+    mode: permissionMode,
+    workingDir,
+    eventBus,
+  });
+  runState.permissionEngine = permissionEngine;
+
+  // Error recovery callback for UI: blocks until the UI posts an action
+  async function onStageError(stageName: string, error: string): Promise<"retry" | "skip" | "abort"> {
+    return new Promise<"retry" | "skip" | "abort">((resolve) => {
+      runState.pendingErrorRecovery = { stageName, error, resolve };
+      emitRunEvent(runState, "stage:error-paused", { stageName, error });
+    });
+  }
+
   // Run in the background — do NOT await before returning.
   (async () => {
     try {
@@ -209,6 +295,8 @@ export async function startRun(
         workingDir,
         skillsDir,
         signal: controller.signal,
+        permissionEngine,
+        onStageError,
       });
 
       if (!result.ok) {

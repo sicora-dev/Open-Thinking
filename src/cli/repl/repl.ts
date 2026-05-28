@@ -7,6 +7,10 @@ import * as readline from "node:readline";
 import { checkFirstRun, listProviders } from "../../config";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
+import { createPermissionEngine } from "../../core/permissions";
+import type { PermissionMode } from "../../core/permissions";
+import type { Sandbox } from "../../core/sandbox";
+import type { ErrorRecoveryAction } from "../../pipeline/executor";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { createPolicyEngine } from "../../policies/engine";
 import { createProviderFromConfig } from "../../providers";
@@ -156,6 +160,54 @@ async function executePipelinePrompt(
     : ":memory:";
   const contextStore = createContextStore({ dbPath });
   const eventBus = createEventBus();
+
+  // Create permission engine (resolve mode: CLI flag > pipeline YAML > default "confirm")
+  const permissionMode: PermissionMode = (config.permissions as PermissionMode) ?? "confirm";
+  const permissionEngine = createPermissionEngine({
+    mode: permissionMode,
+    workingDir: state.workingDir,
+    eventBus,
+  });
+
+  // Wire interactive confirmation prompts for permission requests
+  eventBus.on("permission:request", (e) => {
+    if (e.type !== "permission:request") return;
+    const { request } = e;
+    const riskColor = request.risk === "dangerous" ? COLORS.red : request.risk === "moderate" ? COLORS.yellow : COLORS.green;
+    console.log();
+    console.log(`  ${riskColor}[${request.risk}]${COLORS.reset} ${request.description}`);
+    console.log(`  ${c("dim", "(y)es / (n)o / (a)llow always / (d)eny always")}`);
+
+    // Read a single key from stdin for the confirmation
+    const onData = (data: Buffer) => {
+      const key = data.toString().trim().toLowerCase();
+      let action: "allow" | "deny" = "allow";
+      let remember = false;
+
+      if (key === "y" || key === "yes" || key === "") {
+        action = "allow";
+      } else if (key === "n" || key === "no") {
+        action = "deny";
+      } else if (key === "a") {
+        action = "allow";
+        remember = true;
+      } else if (key === "d") {
+        action = "deny";
+        remember = true;
+      } else {
+        return; // Ignore unrecognized keys, wait for valid input
+      }
+
+      process.stdin.removeListener("data", onData);
+      process.stdin.setRawMode?.(false);
+      permissionEngine.confirmations().resolve(request.id, { action, remember });
+    };
+
+    process.stdin.setRawMode?.(true);
+    process.stdin.resume();
+    process.stdin.on("data", onData);
+  });
+
   const meter = createTokenMeter({ eventBus });
   const tracker = createPersistedRunTracker({
     eventBus,
@@ -272,6 +324,80 @@ async function executePipelinePrompt(
     }
   });
 
+  // Sandbox review callback: show diff and ask user to apply or discard
+  async function onSandboxReview(stgName: string, sandbox: Sandbox): Promise<"apply" | "discard"> {
+    const diffs = sandbox.diff();
+    console.log();
+    console.log(`  ${c("cyan", "Sandbox review")} for ${c("bold", stgName)}`);
+    console.log(`  ${c("dim", `${diffs.length} file(s) changed:`)}`);
+    for (const d of diffs) {
+      const icon = d.status === "added" ? c("green", "+") : d.status === "deleted" ? c("red", "-") : c("yellow", "~");
+      console.log(`    ${icon} ${d.path} (${d.status})`);
+    }
+    console.log();
+    console.log(c("dim", sandbox.formatDiff().split("\n").map((l) => `    ${l}`).join("\n")));
+    console.log();
+
+    return new Promise<"apply" | "discard">((resolve) => {
+      process.stdout.write(`  ${c("cyan", "Apply changes?")} ${c("dim", "(y/n) ")}`);
+      const onData = (data: Buffer) => {
+        const key = data.toString().trim().toLowerCase();
+        if (key === "y" || key === "yes" || key === "") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("green", "Applied.")}`)
+          console.log();
+          resolve("apply");
+        } else if (key === "n" || key === "no") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("yellow", "Discarded.")}`)
+          console.log();
+          resolve("discard");
+        }
+      };
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      process.stdin.on("data", onData);
+    });
+  }
+
+  // Pause-on-error callback: ask the user what to do when a stage fails
+  async function onStageError(stgName: string, error: string): Promise<ErrorRecoveryAction> {
+    console.log();
+    console.log(`  ${c("red", "Stage failed:")} ${c("bold", stgName)}`);
+    console.log(`  ${c("dim", error.length > 200 ? `${error.slice(0, 200)}...` : error)}`);
+    console.log(`  ${c("dim", "(r)etry / (s)kip / (a)bort")}`);
+
+    return new Promise<ErrorRecoveryAction>((resolve) => {
+      const onData = (data: Buffer) => {
+        const key = data.toString().trim().toLowerCase();
+        if (key === "r" || key === "retry") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("cyan", "Retrying...")}`)
+          console.log();
+          resolve("retry");
+        } else if (key === "s" || key === "skip") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("yellow", "Skipped.")}`)
+          console.log();
+          resolve("skip");
+        } else if (key === "a" || key === "abort" || key === "") {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode?.(false);
+          console.log(`  ${c("red", "Aborting.")}`)
+          console.log();
+          resolve("abort");
+        }
+      };
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      process.stdin.on("data", onData);
+    });
+  }
+
   // Token limit callback: ask the user if they want to continue
   async function onTokenLimit(
     stgName: string,
@@ -327,6 +453,9 @@ async function executePipelinePrompt(
       skillsDir,
       signal: abortController?.signal,
       onTokenLimit,
+      permissionEngine,
+      onSandboxReview,
+      onStageError,
     });
   } finally {
     meter.stop();

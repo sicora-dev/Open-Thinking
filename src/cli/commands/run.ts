@@ -5,6 +5,10 @@ import { basename, dirname, resolve } from "node:path";
 import type { Command } from "commander";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
+import { createPermissionEngine } from "../../core/permissions";
+import type { PermissionMode } from "../../core/permissions";
+import type { Sandbox } from "../../core/sandbox";
+import type { ErrorRecoveryAction } from "../../pipeline/executor";
 import { executePipeline, resolveExecutionOrder } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
@@ -20,6 +24,7 @@ type RunOptions = {
   stage?: string;
   dryRun?: boolean;
   skillsDir?: string;
+  permissions?: string;
 };
 
 export function registerRunCommand(program: Command): void {
@@ -31,6 +36,7 @@ export function registerRunCommand(program: Command): void {
     .option("-s, --stage <name>", "Execute a single stage only")
     .option("--skills-dir <path>", "Skills directory (default: skills/ next to pipeline file)")
     .option("--dry-run", "Show execution plan without running")
+    .option("--permissions <mode>", "Permission mode: auto, sandbox, confirm (default), strict")
     .action(async (options: RunOptions) => {
       if (!options.input) {
         console.error("Error: --input is required. Tell the pipeline what to do.");
@@ -142,12 +148,82 @@ export function registerRunCommand(program: Command): void {
         }
       });
 
+      // Create permission engine
+      const permissionMode = (options.permissions ?? config.permissions ?? "confirm") as PermissionMode;
+      const validModes: PermissionMode[] = ["auto", "sandbox", "confirm", "strict"];
+      if (!validModes.includes(permissionMode)) {
+        console.error(`Invalid permission mode: "${options.permissions}". Use: ${validModes.join(", ")}`);
+        process.exit(1);
+      }
+      const permissionEngine = createPermissionEngine({
+        mode: permissionMode,
+        workingDir: process.cwd(),
+        eventBus,
+      });
+
+      // Wire permission events for CLI output
+      eventBus.on("permission:request", (e) => {
+        if (e.type === "permission:request") {
+          const { request } = e;
+          const riskColor = request.risk === "dangerous" ? "\x1b[31m" : request.risk === "moderate" ? "\x1b[33m" : "\x1b[32m";
+          console.log(`\n  ${riskColor}[${request.risk}]\x1b[0m ${request.description}`);
+          console.log("  Waiting for approval...");
+        }
+      });
+      eventBus.on("permission:granted", (e) => {
+        if (e.type === "permission:granted") {
+          const suffix = e.remembered ? " (remembered)" : "";
+          console.log(`  \x1b[32m✓\x1b[0m Approved${suffix}`);
+        }
+      });
+      eventBus.on("permission:denied", (e) => {
+        if (e.type === "permission:denied") {
+          const suffix = e.remembered ? " (remembered)" : "";
+          console.log(`  \x1b[31m✗\x1b[0m Denied${suffix}`);
+        }
+      });
+
       const tracker = createPersistedRunTracker({
         eventBus,
         pipelineName: config.name,
         pipelinePath: resolve(options.pipeline),
         prompt: options.input,
       });
+
+      // Sandbox review callback for one-shot CLI
+      async function onSandboxReview(stgName: string, sandbox: Sandbox): Promise<"apply" | "discard"> {
+        const diffs = sandbox.diff();
+        console.log(`\n[${stgName}] Sandbox: ${diffs.length} file(s) changed`);
+        for (const d of diffs) {
+          console.log(`  ${d.status === "added" ? "+" : d.status === "deleted" ? "-" : "~"} ${d.path}`);
+        }
+        console.log(sandbox.formatDiff());
+
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        return new Promise<"apply" | "discard">((resolve) => {
+          rl.question("Apply changes? (y/n) ", (answer) => {
+            rl.close();
+            resolve(answer.trim().toLowerCase() === "y" || answer.trim() === "" ? "apply" : "discard");
+          });
+        });
+      }
+
+      // Pause-on-error callback for one-shot CLI
+      async function onStageError(stgName: string, error: string): Promise<ErrorRecoveryAction> {
+        console.error(`\n[${stgName}] Failed: ${error.slice(0, 200)}`);
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        return new Promise<ErrorRecoveryAction>((resolve) => {
+          rl.question("(r)etry / (s)kip / (a)bort? ", (answer) => {
+            rl.close();
+            const a = answer.trim().toLowerCase();
+            if (a === "r" || a === "retry") resolve("retry");
+            else if (a === "s" || a === "skip") resolve("skip");
+            else resolve("abort");
+          });
+        });
+      }
 
       // Execute
       const result = await executePipeline({
@@ -158,6 +234,9 @@ export function registerRunCommand(program: Command): void {
         eventBus,
         workingDir: process.cwd(),
         skillsDir,
+        permissionEngine,
+        onSandboxReview,
+        onStageError,
       });
 
       contextStore.close();

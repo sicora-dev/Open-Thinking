@@ -40,6 +40,16 @@ function safePath(workingDir: string, filePath: string): string | null {
   return resolved;
 }
 
+function commandHasWorkspaceEscape(command: string): string | null {
+  if (/(^|[\s"'`])\.\.(\/|\\)/.test(command)) {
+    return "Command references a parent directory path ('../'), which is outside the workspace boundary";
+  }
+  if (/(^|\s)(>|>>|2>|&>)\s*['"]?\//.test(command)) {
+    return "Command redirects output to an absolute path outside the workspace boundary";
+  }
+  return null;
+}
+
 /**
  * Per-stage cache for `read_file`. Keyed by absolute path, stores the
  * file's mtime (ms) and the content already shown to the agent.
@@ -350,6 +360,8 @@ export function createRunCommandTool(
         return err(new Error("run_command requires a non-empty string 'command'"));
       }
       const timeout = (args.timeout_ms as number) ?? DEFAULT_COMMAND_TIMEOUT;
+      const escapeReason = commandHasWorkspaceEscape(command);
+      if (escapeReason) return err(new Error(escapeReason));
 
       try {
         const output = execSync(command, {
