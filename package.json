@@ -46,8 +46,7 @@
   },
   "os": [
     "darwin",
-    "linux",
-    "win32"
+    "linux"
   ],
   "license": "MIT",
   "repository": {

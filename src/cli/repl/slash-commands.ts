@@ -797,16 +797,12 @@ const commands: SlashCommand[] = [
       if (sub === "open") {
         const status = statusUi();
         if (!status.running) return { output: "  UI is not running. Use /ui start." };
+        const platform = process.platform;
+        const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
         try {
           // Lazy import to keep top of file clean
           const { spawn } = await import("node:child_process");
-          if (process.platform === "darwin") {
-            spawn("open", [status.url], { detached: true, stdio: "ignore" }).unref();
-          } else if (process.platform === "win32") {
-            spawn("cmd", ["/c", "start", "", status.url], { detached: true, stdio: "ignore" }).unref();
-          } else {
-            spawn("xdg-open", [status.url], { detached: true, stdio: "ignore" }).unref();
-          }
+          spawn(cmd, [status.url], { detached: true, stdio: "ignore" }).unref();
         } catch {
           // ignore
         }
