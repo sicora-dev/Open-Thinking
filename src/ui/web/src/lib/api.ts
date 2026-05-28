@@ -277,4 +277,6 @@ export const api = {
     req<{ path: string; parent: string; entries: FsEntry[] }>(
       `/api/fs/browse?path=${encodeURIComponent(path ?? "")}${options?.showHidden ? "&showHidden=1" : ""}`,
     ),
+  readFile: (path: string) =>
+    req<{ content: string | null; tooBig: boolean }>(`/api/fs/read?path=${encodeURIComponent(path)}`),
 };

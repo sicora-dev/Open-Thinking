@@ -117,7 +117,18 @@ export async function stopUi(): Promise<Result<StopResult>> {
   }
 
   try {
-    process.kill(lock.pid, "SIGTERM");
+    if (process.platform === "win32") {
+      // On Windows, SIGTERM via process.kill() calls TerminateProcess (immediate).
+      // Use taskkill for a graceful attempt first, fall back to force kill.
+      const { execSync } = await import("node:child_process");
+      try {
+        execSync(`taskkill /PID ${lock.pid}`, { stdio: "ignore" });
+      } catch {
+        // Already dead
+      }
+    } else {
+      process.kill(lock.pid, "SIGTERM");
+    }
   } catch (e) {
     // Already dead
     removeLock();
@@ -136,7 +147,16 @@ export async function stopUi(): Promise<Result<StopResult>> {
 
   // Force kill
   try {
-    process.kill(lock.pid, "SIGKILL");
+    if (process.platform === "win32") {
+      const { execSync } = await import("node:child_process");
+      try {
+        execSync(`taskkill /F /PID ${lock.pid}`, { stdio: "ignore" });
+      } catch {
+        // ignore
+      }
+    } else {
+      process.kill(lock.pid, "SIGKILL");
+    }
   } catch {
     // ignore
   }

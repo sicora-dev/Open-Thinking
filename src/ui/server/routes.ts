@@ -1098,6 +1098,22 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     }
   }
 
+  // ── FS read ────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/fs/read") {
+    const target = url.searchParams.get("path");
+    if (!target) return badRequest("path is required");
+    try {
+      const abs = resolve(target);
+      const st = statSync(abs);
+      if (st.isDirectory()) return badRequest("path is a directory");
+      if (st.size > 1_048_576) return json({ ok: true, content: null, tooBig: true });
+      const content = readFileSync(abs, "utf-8");
+      return json({ ok: true, content, tooBig: false });
+    } catch (e) {
+      return badRequest(`Cannot read file: ${(e as Error).message}`);
+    }
+  }
+
   return notFound();
 }
 
