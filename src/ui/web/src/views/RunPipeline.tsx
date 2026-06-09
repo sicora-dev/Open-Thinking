@@ -73,6 +73,8 @@ export function RunPipeline({ initialRunId }: { initialRunId?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [logFilter, setLogFilter] = useState("all");
+  const [liveMessage, setLiveMessage] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -233,6 +235,19 @@ export function RunPipeline({ initialRunId }: { initialRunId?: string }) {
     }
   };
 
+  const sendLiveMessage = async () => {
+    if (!run || !liveMessage.trim()) return;
+    setSendingMessage(true);
+    try {
+      await api.injectMessage(run.id, liveMessage.trim());
+      setLiveMessage("");
+    } catch (e) {
+      pushToast({ kind: "error", title: "Could not send message", description: (e as Error).message });
+    } finally {
+      setSendingMessage(false);
+    }
+  };
+
   return (
     <div ref={wrapRef} style={{ display: "grid", gridTemplateColumns: cols, height: "100%", minHeight: 0 }}>
       {showLeft && (
@@ -345,6 +360,49 @@ export function RunPipeline({ initialRunId }: { initialRunId?: string }) {
             >
               {Icons.stop} {cancelBusy ? "Cancelling..." : "Stop current run"}
             </button>
+          )}
+
+          {active && run && (
+            <>
+              <div style={{ marginTop: 20, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--fg-dim)", fontWeight: 600, marginBottom: 10 }}>
+                Message orchestrator
+              </div>
+              <textarea
+                value={liveMessage}
+                onChange={(event) => setLiveMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && liveMessage.trim()) {
+                    event.preventDefault();
+                    sendLiveMessage();
+                  }
+                }}
+                placeholder="Send instruction during execution..."
+                style={{
+                  width: "100%", minHeight: 70, padding: "10px 12px",
+                  background: "var(--bg-card)", border: "1px solid var(--border)",
+                  borderRadius: "var(--r-md)", fontSize: 12, color: "var(--fg)",
+                  fontFamily: "inherit", resize: "vertical", outline: "none", lineHeight: 1.5,
+                }}
+              />
+              <button
+                type="button"
+                onClick={sendLiveMessage}
+                disabled={sendingMessage || !liveMessage.trim()}
+                style={{
+                  marginTop: 8, width: "100%",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  padding: "8px 16px",
+                  background: sendingMessage || !liveMessage.trim() ? "var(--bg-soft)" : "var(--cyan-500)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--r-md)", cursor: sendingMessage || !liveMessage.trim() ? "not-allowed" : "pointer",
+                  fontSize: 12.5, color: sendingMessage || !liveMessage.trim() ? "var(--fg-muted)" : "#fff",
+                  fontWeight: 500,
+                  fontFamily: "inherit",
+                }}
+              >
+                {sendingMessage ? "Sending..." : "Send message"}
+              </button>
+            </>
           )}
 
           {error && (

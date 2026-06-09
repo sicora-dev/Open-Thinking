@@ -218,6 +218,13 @@ export const api = {
       body: JSON.stringify({ requestId, action, remember }),
     }),
 
+  /** Inject a user message into a running orchestrated pipeline. */
+  injectMessage: (id: string, message: string) =>
+    req<{ ok: boolean }>(`/api/runs/${id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+
   // Context
   listContext: (options?: { projectId?: string; prefix?: string }) => {
     const search = new URLSearchParams();

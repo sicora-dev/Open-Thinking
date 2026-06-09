@@ -367,4 +367,7 @@ export type PipelineEvent =
   /** A permission request was denied. */
   | { type: "permission:denied"; requestId: string; stageName: string; remembered: boolean }
   /** A tool action was auto-allowed (safe action or auto mode). */
-  | { type: "permission:auto-allowed"; tool: string; subject: string; stageName: string };
+  | { type: "permission:auto-allowed"; tool: string; subject: string; stageName: string }
+  // ─── User message injection (orchestrated mode) ──────
+  /** A user message was injected into a running orchestrator's agent loop. */
+  | { type: "user-message:received"; stageName: string; message: string };

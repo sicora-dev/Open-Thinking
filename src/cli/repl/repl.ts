@@ -440,6 +440,35 @@ async function executePipelinePrompt(
     meter.withQuietZone(() => originalLog(...args));
   };
 
+  // Live message injection for orchestrated pipelines
+  const injectedMessages: string[] = [];
+  const isOrchestrated = config.mode === "orchestrated";
+  let stdinInjector: ((data: Buffer) => void) | null = null;
+
+  if (isOrchestrated) {
+    // Accumulate a line buffer so we handle multi-byte and partial reads
+    let lineBuf = "";
+    stdinInjector = (data: Buffer) => {
+      const str = data.toString();
+      lineBuf += str;
+      const lines = lineBuf.split("\n");
+      // Keep the incomplete last fragment
+      lineBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) {
+          injectedMessages.push(trimmed);
+          console.log(`  ${c("cyan", "[sent]")} ${trimmed}`);
+        }
+      }
+    };
+    process.stdin.setRawMode?.(false);
+    process.stdin.resume();
+    process.stdin.on("data", stdinInjector);
+    console.log(`  ${c("dim", "Type messages to send instructions to the orchestrator during execution.")}`);
+    console.log();
+  }
+
   // Execute pipeline
   let result: Awaited<ReturnType<typeof executePipeline>>;
   try {
@@ -456,10 +485,17 @@ async function executePipelinePrompt(
       permissionEngine,
       onSandboxReview,
       onStageError,
+      getInjectedMessages: isOrchestrated ? () => {
+        const msgs = injectedMessages.splice(0);
+        return msgs.map((m) => ({ role: "user" as const, content: m }));
+      } : undefined,
     });
   } finally {
     meter.stop();
     console.log = originalLog;
+    if (stdinInjector) {
+      process.stdin.removeListener("data", stdinInjector);
+    }
   }
 
   // Stash the run summary on state for /tokens to inspect later.

@@ -67,6 +67,11 @@ export type ExecutorDeps = {
    * "abort" to stop the pipeline.
    */
   onStageError?: (stageName: string, error: string) => Promise<ErrorRecoveryAction>;
+  /**
+   * Returns pending user messages injected mid-execution.
+   * Only used in orchestrated mode — messages go to the orchestrator's agent loop.
+   */
+  getInjectedMessages?: () => import("../../shared/types").Message[];
 };
 
 /**
@@ -754,6 +759,13 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     runAgentLoop,
   });
 
+  // Track delegate agent tokens/cost via events
+  const delegateResults: { usage?: TokenUsage; cost?: number }[] = [];
+  const unsubDelegate = eventBus.on("delegate:complete", (evt) => {
+    if (evt.type !== "delegate:complete") return;
+    delegateResults.push({ usage: evt.result.usage, cost: evt.result.cost });
+  });
+
   // Execute the orchestrator stage with the delegate tool injected
   const result = await executeStageWithDelegateTool(
     orchestratorName,
@@ -762,11 +774,23 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     delegateTool,
   );
 
+  unsubDelegate();
+
+  // Accumulate tokens from orchestrator + all delegated agents
   const totalTokens: TokenUsage = {
     promptTokens: result.usage?.promptTokens ?? 0,
     completionTokens: result.usage?.completionTokens ?? 0,
     totalTokens: result.usage?.totalTokens ?? 0,
   };
+  let totalCostAccum = result.cost ?? 0;
+  for (const dr of delegateResults) {
+    if (dr.usage) {
+      totalTokens.promptTokens += dr.usage.promptTokens;
+      totalTokens.completionTokens += dr.usage.completionTokens;
+      totalTokens.totalTokens += dr.usage.totalTokens;
+    }
+    totalCostAccum += dr.cost ?? 0;
+  }
 
   const pipelineResult: PipelineRunResult = {
     pipelineName: config.name,
@@ -774,7 +798,7 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     status: result.status === "success" ? "success" : "failed",
     stages: [result],
     totalDurationMs: Date.now() - start,
-    totalCost: result.cost ?? 0,
+    totalCost: totalCostAccum,
     totalTokens,
   };
 
@@ -882,6 +906,7 @@ async function executeStageWithDelegateTool(
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit ? (summary) => deps.onTokenLimit!(stageName, summary) : undefined,
     requireToolCallOnFirstIteration: true,
+    getInjectedMessages: deps.getInjectedMessages,
   });
   unsubscribeDelegateComplete();
 

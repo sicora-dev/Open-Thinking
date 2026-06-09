@@ -57,6 +57,13 @@ export type AgentLoopConfig = {
   onTokenLimit?: (summary: WorkSummary) => Promise<boolean>;
   /** Force the first model response to be a tool call when tools are available. */
   requireToolCallOnFirstIteration?: boolean;
+  /**
+   * Called at the start of each iteration to fetch any user messages
+   * injected mid-execution (orchestrated mode only). Returned messages
+   * are appended after the last exchange so the LLM sees them as the
+   * latest user input.
+   */
+  getInjectedMessages?: () => Message[];
 };
 
 export type WorkSummary = {
@@ -372,6 +379,16 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<Result<Agen
 
     // Build messages: refreshed task + working memory + last exchange only
     const currentMessages = [buildTaskMessage(originalTask, memory), ...lastExchange];
+
+    // Inject user messages sent mid-execution (orchestrated mode)
+    if (config.getInjectedMessages) {
+      const injected = config.getInjectedMessages();
+      for (const msg of injected) {
+        currentMessages.push(msg);
+        eventBus.emit({ type: "user-message:received", stageName, message: msg.content });
+      }
+    }
+
     const availableTools = isFinalIteration ? [] : registry.definitions();
 
     // On wind-down, inject a warning

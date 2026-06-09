@@ -52,6 +52,12 @@ type ActiveRun = {
   subscribers: Set<(evt: RunEvent) => void>;
   permissionEngine?: import("../../core/permissions").PermissionEngine;
   pendingErrorRecovery?: ErrorRecoveryGate;
+  accumulatedTokens: number;
+  accumulatedCost: number;
+  /** Pending user messages to inject into the orchestrator's next iteration. */
+  injectedMessages: string[];
+  /** Whether this run's pipeline is orchestrated (only orchestrated runs accept messages). */
+  isOrchestrated: boolean;
 };
 
 const active = new Map<string, ActiveRun>();
@@ -110,6 +116,18 @@ export function getPendingErrorRecovery(runId: string): { stageName: string; err
   const a = active.get(runId);
   if (!a?.pendingErrorRecovery) return null;
   return { stageName: a.pendingErrorRecovery.stageName, error: a.pendingErrorRecovery.error };
+}
+
+/**
+ * Inject a user message into a running orchestrated pipeline.
+ * The message will be delivered to the orchestrator on its next agent loop iteration.
+ * Returns true if the message was accepted, false if the run is not active or not orchestrated.
+ */
+export function injectMessage(runId: string, message: string): boolean {
+  const a = active.get(runId);
+  if (!a || !a.isOrchestrated) return false;
+  a.injectedMessages.push(message);
+  return true;
 }
 
 /**
@@ -216,10 +234,27 @@ export async function startRun(
     seq: 0,
     startedAtMs: Date.now(),
     subscribers: new Set(),
+    accumulatedTokens: 0,
+    accumulatedCost: 0,
+    injectedMessages: [],
+    isOrchestrated: config.mode === "orchestrated",
   };
   active.set(runId, runState);
 
   const eventBus = createEventBus();
+  // Track tokens from stage completions and delegate completions for error-path recovery
+  eventBus.on("stage:complete", (evt) => {
+    if (evt.type === "stage:complete" && evt.result?.usage) {
+      runState.accumulatedTokens += evt.result.usage.totalTokens ?? 0;
+      runState.accumulatedCost += evt.result.cost ?? 0;
+    }
+  });
+  eventBus.on("delegate:complete", (evt) => {
+    if (evt.type === "delegate:complete" && evt.result?.usage) {
+      runState.accumulatedTokens += evt.result.usage.totalTokens ?? 0;
+      runState.accumulatedCost += evt.result.cost ?? 0;
+    }
+  });
   eventBus.onAny((evt: PipelineEvent) => {
     emitRunEvent(runState, evt.type, evt);
   });
@@ -297,13 +332,17 @@ export async function startRun(
         signal: controller.signal,
         permissionEngine,
         onStageError,
+        getInjectedMessages: runState.isOrchestrated ? () => {
+          const msgs = runState.injectedMessages.splice(0);
+          return msgs.map((m) => ({ role: "user" as const, content: m }));
+        } : undefined,
       });
 
       if (!result.ok) {
         finishRun(
           runState,
           controller.signal.aborted ? "cancelled" : "failed",
-          { tokens: 0, cost: 0 },
+          { tokens: runState.accumulatedTokens, cost: runState.accumulatedCost },
           result.error.message,
         );
       } else {
@@ -320,7 +359,7 @@ export async function startRun(
         });
       }
     } catch (e) {
-      finishRun(runState, controller.signal.aborted ? "cancelled" : "failed", { tokens: 0, cost: 0 }, (e as Error).message);
+      finishRun(runState, controller.signal.aborted ? "cancelled" : "failed", { tokens: runState.accumulatedTokens, cost: runState.accumulatedCost }, (e as Error).message);
     } finally {
       contextStore.close();
       active.delete(runId);

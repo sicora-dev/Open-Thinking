@@ -155,6 +155,15 @@ export function getRun(id: string): RunRow | null {
   return row ? rowToRun(row) : null;
 }
 
+/**
+ * Update only the totals (tokens + cost) for a run without changing status/endedAt.
+ */
+export function updateRunTotals(id: string, totals: { tokens: number; cost: number }): void {
+  getDb()
+    .prepare(`UPDATE runs SET total_tokens = ?, total_cost = ? WHERE id = ?`)
+    .run(totals.tokens, totals.cost, id);
+}
+
 export function getRunEvents(runId: string, sinceSeq = 0): RunEventRow[] {
   const rows = getDb()
     .prepare(

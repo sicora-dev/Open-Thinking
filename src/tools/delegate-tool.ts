@@ -18,6 +18,7 @@ import type {
   StageDefinition,
   ToolFunction,
 } from "../shared/types";
+import { estimateCost, isLocalProvider } from "../providers/pricing";
 import { formatPersistentContext, loadStageContext } from "../workspace";
 import { createToolRegistry } from "./tool-registry";
 
@@ -184,6 +185,10 @@ export function createDelegateTool(deps: DelegateDeps): ToolFunction {
 
       const delegateDuration = Date.now() - delegateStart;
 
+      // Calculate cost for the delegated agent
+      const providerType = deps.config.providers[stageDef.provider]?.type ?? "openai-compatible";
+      const delegateCost = estimateCost(agentResult.totalUsage, stageDef.model, isLocalProvider(providerType)) ?? 0;
+
       // Emit delegate:complete
       deps.eventBus.emit({
         type: "delegate:complete",
@@ -194,6 +199,7 @@ export function createDelegateTool(deps: DelegateDeps): ToolFunction {
           status: "success",
           output: agentResult.finalContent,
           usage: agentResult.totalUsage,
+          cost: delegateCost,
           durationMs: delegateDuration,
           contextKeysWritten: writeCheck.ok ? [outputKey] : [],
           stopReason: agentResult.stopReason,

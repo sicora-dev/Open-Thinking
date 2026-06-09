@@ -24,6 +24,7 @@
  *   GET    /api/runs/:id/permissions            — list pending permission requests
  *   POST   /api/runs/:id/error-recovery        — resolve error recovery (retry/skip/abort)
  *   GET    /api/runs/:id/error-recovery        — get pending error recovery state
+ *   POST   /api/runs/:id/message               — inject user message into orchestrator
  *   GET    /api/context                         — inspect project context stores
  *   GET    /api/context/snapshots               — list snapshots for a project
  *   POST   /api/context/snapshots               — save a snapshot
@@ -97,8 +98,9 @@ import {
   getRun,
   getRunEvents,
   listRuns,
+  updateRunTotals,
 } from "./runs-store";
-import { startRun, cancelRun, subscribeRun, isRunActive, resolvePermission, listPendingPermissions, resolveErrorRecovery, getPendingErrorRecovery } from "./run-manager";
+import { startRun, cancelRun, subscribeRun, isRunActive, resolvePermission, listPendingPermissions, resolveErrorRecovery, getPendingErrorRecovery, injectMessage } from "./run-manager";
 import {
   createSkillInRoot,
   deleteSkillDocument,
@@ -668,6 +670,52 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     return json({ ok: true, runId: result.value.runId }, 202);
   }
 
+  // POST /api/runs/recalculate-costs — recalculate costs for all historical runs using current pricing table
+  if (method === "POST" && pathname === "/api/runs/recalculate-costs") {
+    const { estimateCost: estimate, isLocalProvider: isLocal } = await import("../../providers/pricing");
+    const allRuns = listRuns(500);
+    let updated = 0;
+
+    for (const run of allRuns) {
+      const events = getRunEvents(run.id, 0);
+
+      // Track the latest tokens:update per stage (they carry cumulative usage for that stage)
+      const stageUsage = new Map<string, { usage: { promptTokens: number; completionTokens: number; totalTokens: number }; model: string; providerType: string }>();
+
+      for (const event of events) {
+        if (event.type !== "tokens:update") continue;
+        const payload = JSON.parse(event.payload) as Record<string, unknown>;
+        const stageName = (payload.stageName as string) ?? "";
+        const usage = payload.usage as { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined;
+        const model = payload.model as string | undefined;
+        const providerType = (payload.providerType as string) ?? "";
+        if (usage && model) {
+          stageUsage.set(stageName, {
+            usage: { promptTokens: usage.promptTokens ?? 0, completionTokens: usage.completionTokens ?? 0, totalTokens: usage.totalTokens ?? 0 },
+            model,
+            providerType,
+          });
+        }
+      }
+
+      // Sum across all stages
+      let totalTokens = 0;
+      let totalCost = 0;
+      for (const stage of stageUsage.values()) {
+        totalTokens += stage.usage.totalTokens;
+        const cost = estimate(stage.usage, stage.model, isLocal(stage.providerType));
+        if (cost !== null) totalCost += cost;
+      }
+
+      if (totalTokens > 0 || totalCost > 0) {
+        updateRunTotals(run.id, { tokens: totalTokens, cost: totalCost });
+        updated++;
+      }
+    }
+
+    return json({ ok: true, updated, total: allRuns.length });
+  }
+
   // ── Runs ───────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/runs") {
     return json({ ok: true, runs: listRuns(100) });
@@ -880,6 +928,20 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
   if (runErrorParams && method === "GET") {
     const pending = getPendingErrorRecovery(runErrorParams.id ?? "");
     return json({ ok: true, pending });
+  }
+
+  // POST /api/runs/:id/message — inject a user message into a running orchestrated pipeline
+  const runMessageParams = match(pathname, "/api/runs/:id/message");
+  if (runMessageParams && method === "POST") {
+    const body = await readJsonBody<{ message: string }>(req);
+    if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
+      return badRequest("`message` is required and must be a non-empty string");
+    }
+    const accepted = injectMessage(runMessageParams.id ?? "", body.message.trim());
+    if (!accepted) {
+      return badRequest("Run is not active or not an orchestrated pipeline");
+    }
+    return json({ ok: true });
   }
 
   // ── Context stores ─────────────────────────────────────
