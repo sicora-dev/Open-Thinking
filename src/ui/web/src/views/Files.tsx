@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icons } from "../components/Icons";
-import { api, type FsEntry, type PipelineEntry } from "../lib/api";
+import { api, type FsEntry, type PipelineEntry, type ProjectEntry } from "../lib/api";
+import {
+  resolveSelectedWorkspaceProjectId,
+  SELECTED_WORKSPACE_CHANGE_EVENT,
+} from "../lib/workspace-selection";
 
 const btnGhost: React.CSSProperties = {
   display: "inline-flex",
@@ -21,6 +25,8 @@ export function Files() {
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [pipelines, setPipelines] = useState<PipelineEntry[]>([]);
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
+  const [projectId, setProjectId] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null | "binary" | "tooBig">(null);
   const [showHidden, setShowHidden] = useState(false);
@@ -48,10 +54,14 @@ export function Files() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([api.listProjects(), api.listPipelines()])
-      .then(([projects, pipelineList]) => {
+      .then(([projectList, pipelineList]) => {
         if (cancelled) return;
+        setProjects(projectList);
         setPipelines(pipelineList);
-        const startPath = projects[0]?.path ?? pipelineList[0]?.rootPath;
+        const resolved = resolveSelectedWorkspaceProjectId(projectList);
+        setProjectId(resolved);
+        const project = projectList.find((p) => p.id === resolved);
+        const startPath = project?.path ?? projectList[0]?.path ?? pipelineList[0]?.rootPath;
         loadDir(startPath, showHidden);
       })
       .catch((e) => {
@@ -63,6 +73,19 @@ export function Files() {
       cancelled = true;
     };
   }, [loadDir]);
+
+  useEffect(() => {
+    const onWorkspaceChange = () => {
+      const resolved = resolveSelectedWorkspaceProjectId(projects);
+      if (resolved && resolved !== projectId) {
+        setProjectId(resolved);
+        const project = projects.find((p) => p.id === resolved);
+        if (project) loadDir(project.path, showHidden);
+      }
+    };
+    window.addEventListener(SELECTED_WORKSPACE_CHANGE_EVENT, onWorkspaceChange);
+    return () => window.removeEventListener(SELECTED_WORKSPACE_CHANGE_EVENT, onWorkspaceChange);
+  }, [projects, projectId, loadDir, showHidden]);
 
   const selectedPipeline = useMemo(
     () => selected ? pipelines.find((pipeline) => pipeline.path === selected.path) ?? null : null,

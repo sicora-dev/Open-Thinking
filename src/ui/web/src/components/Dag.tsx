@@ -61,13 +61,18 @@ export function Dag({
     }
   }
 
+  // Compute required width from actual layout
+  const requiredWidth = 20 + layers.length * (nodeW + gapX) - gapX + 20;
+  const svgWidth = Math.max(width, requiredWidth);
+
   const stageMap = new Map(stages.map((s) => [s.id, s]));
 
   return (
+    <div style={{ width: "100%", overflowX: "auto" }}>
     <svg
-      width={width}
+      width={svgWidth}
       height={height}
-      style={{ display: "block", overflow: "visible" }}
+      style={{ display: "block" }}
     >
       {/* Edges */}
       {stages.map((s) =>
@@ -178,5 +183,6 @@ export function Dag({
         );
       })}
     </svg>
+    </div>
   );
 }
