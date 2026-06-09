@@ -399,3 +399,23 @@
     background-image: linear-gradient(135deg, var(--fg), var(--cyan-500));
   }
 }
+
+/* Markdown rendered output */
+.md-render { color: var(--fg); font-size: 13.5px; line-height: 1.7; max-width: 860px; }
+.md-render h1, .md-render h2, .md-render h3, .md-render h4 { font-weight: 600; margin: 1.4em 0 0.5em; color: var(--fg); }
+.md-render h1 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.md-render h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.md-render h3 { font-size: 1.05em; }
+.md-render p { margin: 0.7em 0; }
+.md-render ul, .md-render ol { margin: 0.5em 0; padding-left: 1.6em; }
+.md-render li { margin: 0.2em 0; }
+.md-render a { color: var(--cyan-500); text-decoration: underline; }
+.md-render code { font-family: var(--font-mono); font-size: 0.88em; background: var(--bg-soft); padding: 0.15em 0.4em; border-radius: 3px; }
+.md-render pre { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; overflow-x: auto; margin: 0.8em 0; }
+.md-render pre code { background: none; padding: 0; font-size: 12.5px; }
+.md-render blockquote { border-left: 3px solid var(--cyan-400); margin: 0.8em 0; padding: 0.4em 0.8em; color: var(--fg-muted); background: var(--bg-soft); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.md-render table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 13px; }
+.md-render th, .md-render td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
+.md-render th { background: var(--bg-soft); font-weight: 600; }
+.md-render img { max-width: 100%; border-radius: var(--r-sm); }
+.md-render hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }

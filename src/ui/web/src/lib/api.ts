@@ -306,4 +306,5 @@ export const api = {
     ),
   readFile: (path: string) =>
     req<{ content: string | null; tooBig: boolean }>(`/api/fs/read?path=${encodeURIComponent(path)}`),
+  serveUrl: (path: string) => `/api/fs/serve?path=${encodeURIComponent(path)}`,
 };

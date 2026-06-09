@@ -1401,6 +1401,30 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     }
   }
 
+  // ── FS serve (raw binary) ──────────────────────────────
+  if (method === "GET" && pathname === "/api/fs/serve") {
+    const target = url.searchParams.get("path");
+    if (!target) return badRequest("path is required");
+    try {
+      const abs = resolve(target);
+      const st = statSync(abs);
+      if (st.isDirectory()) return badRequest("path is a directory");
+      const ext = abs.split(".").pop()?.toLowerCase() ?? "";
+      const MIME: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+        gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+        bmp: "image/bmp", ico: "image/x-icon",
+        pdf: "application/pdf",
+        html: "text/html", htm: "text/html",
+      };
+      const mime = MIME[ext] ?? "application/octet-stream";
+      const content = readFileSync(abs);
+      return new Response(content, { headers: { "Content-Type": mime, "Cache-Control": "no-store" } });
+    } catch (e) {
+      return badRequest(`Cannot serve file: ${(e as Error).message}`);
+    }
+  }
+
   return notFound();
 }
 
