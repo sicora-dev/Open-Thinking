@@ -52,7 +52,7 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   );
 }
 
-export function RunPipeline() {
+export function RunPipeline({ initialRunId }: { initialRunId?: string }) {
   const { pushToast } = useToast();
   const wrapRef = useRef<HTMLDivElement>(null);
   const seenSeqsRef = useRef<Set<number>>(new Set());
@@ -73,6 +73,8 @@ export function RunPipeline() {
   const [error, setError] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [logFilter, setLogFilter] = useState("all");
+  const [liveMessage, setLiveMessage] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -122,6 +124,11 @@ export function RunPipeline() {
   useEffect(() => {
     loadPipelines();
   }, [loadPipelines]);
+
+  useEffect(() => {
+    if (!initialRunId) return;
+    setRunId(initialRunId);
+  }, [initialRunId]);
 
   useEffect(() => {
     if (runId) loadRun(runId);
@@ -225,6 +232,19 @@ export function RunPipeline() {
       pushToast({ kind: "error", title: "Could not cancel run", description: (e as Error).message });
     } finally {
       setCancelBusy(false);
+    }
+  };
+
+  const sendLiveMessage = async () => {
+    if (!run || !liveMessage.trim()) return;
+    setSendingMessage(true);
+    try {
+      await api.injectMessage(run.id, liveMessage.trim());
+      setLiveMessage("");
+    } catch (e) {
+      pushToast({ kind: "error", title: "Could not send message", description: (e as Error).message });
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -342,6 +362,49 @@ export function RunPipeline() {
             </button>
           )}
 
+          {active && run && (
+            <>
+              <div style={{ marginTop: 20, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--fg-dim)", fontWeight: 600, marginBottom: 10 }}>
+                Message orchestrator
+              </div>
+              <textarea
+                value={liveMessage}
+                onChange={(event) => setLiveMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && liveMessage.trim()) {
+                    event.preventDefault();
+                    sendLiveMessage();
+                  }
+                }}
+                placeholder="Send instruction during execution..."
+                style={{
+                  width: "100%", minHeight: 70, padding: "10px 12px",
+                  background: "var(--bg-card)", border: "1px solid var(--border)",
+                  borderRadius: "var(--r-md)", fontSize: 12, color: "var(--fg)",
+                  fontFamily: "inherit", resize: "vertical", outline: "none", lineHeight: 1.5,
+                }}
+              />
+              <button
+                type="button"
+                onClick={sendLiveMessage}
+                disabled={sendingMessage || !liveMessage.trim()}
+                style={{
+                  marginTop: 8, width: "100%",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  padding: "8px 16px",
+                  background: sendingMessage || !liveMessage.trim() ? "var(--bg-soft)" : "var(--cyan-500)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--r-md)", cursor: sendingMessage || !liveMessage.trim() ? "not-allowed" : "pointer",
+                  fontSize: 12.5, color: sendingMessage || !liveMessage.trim() ? "var(--fg-muted)" : "#fff",
+                  fontWeight: 500,
+                  fontFamily: "inherit",
+                }}
+              >
+                {sendingMessage ? "Sending..." : "Send message"}
+              </button>
+            </>
+          )}
+
           {error && (
             <div style={{ marginTop: 16, color: "var(--err)", fontSize: 12.5, lineHeight: 1.5 }}>{error}</div>
           )}
@@ -372,8 +435,18 @@ export function RunPipeline() {
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: "flex", gap: 6 }}>
+              {run && cancellable && (
+                <button
+                  type="button"
+                  style={{ ...btnGhost, color: "var(--err)" }}
+                  onClick={cancel}
+                  disabled={cancelBusy}
+                >
+                  {Icons.stop}<span style={{ marginLeft: 6 }}>{cancelBusy ? "Stopping..." : "Stop"}</span>
+                </button>
+              )}
               {run && (
-                <button type="button" style={btnGhost} onClick={() => { window.location.hash = `#/runs/${run.id}`; }}>{Icons.eye}<span style={{ marginLeft: 6 }}>Open detail</span></button>
+                <button type="button" style={btnGhost} onClick={() => { window.location.hash = `#/runs/${run.id}?from=run`; }}>{Icons.eye}<span style={{ marginLeft: 6 }}>Open detail</span></button>
               )}
               <button type="button" style={btnGhost} onClick={loadPipelines}>{Icons.refresh}<span style={{ marginLeft: 6 }}>Pipelines</span></button>
             </div>

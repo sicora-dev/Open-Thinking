@@ -175,12 +175,14 @@ function parseStreamEvent(event: string, data: Record<string, unknown>): StreamC
     case "message_delta": {
       const usage = data.usage as Record<string, number> | undefined;
       if (usage) {
+        const prompt = usage.input_tokens ?? 0;
+        const completion = usage.output_tokens ?? 0;
         return {
           type: "done",
           usage: {
-            promptTokens: 0,
-            completionTokens: usage.output_tokens ?? 0,
-            totalTokens: usage.output_tokens ?? 0,
+            promptTokens: prompt,
+            completionTokens: completion,
+            totalTokens: prompt + completion,
           },
         };
       }

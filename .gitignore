@@ -31,3 +31,4 @@ audit.log
 
 # Build artifacts
 *.tgz
+docs/guides/post-blog-openthinking.md

@@ -5,7 +5,19 @@
  * a policy-aware `get_context` tool that lets the LLM lazily fetch
  * entries from the shared context store. The lazy fetcher is the
  * cornerstone of token-efficient context loading.
+ *
+ * When a PermissionEngine is provided, tool execution is gated by the
+ * permission system: safe tools auto-pass, risky tools may block until
+ * a human approves or denies the action.
  */
+import type { PermissionEngine } from "../core/permissions";
+import type { Sandbox } from "../core/sandbox";
+import {
+  createSandboxListFilesTool,
+  createSandboxReadFileTool,
+  createSandboxRunCommandTool,
+  createSandboxWriteFileTool,
+} from "../core/sandbox";
 import type { PolicyEngine } from "../policies/engine";
 import { type Result, err, ok } from "../shared/result";
 import type {
@@ -46,25 +58,47 @@ export type ContextAccess = {
 };
 
 /**
+ * Optional permission wiring for human-in-the-loop approval.
+ */
+export type PermissionAccess = {
+  engine: PermissionEngine;
+  stageName: string;
+};
+
+/**
  * @param workingDir - Base directory for file operations.
  * @param allowedTools - If provided, only these tools are registered. Others are excluded.
  * @param contextAccess - If provided, enables the lazy `get_context` tool.
+ * @param permissionAccess - If provided, gates tool execution through the permission engine.
+ * @param sandbox - If provided, file operations are redirected through the sandbox.
  */
 export function createToolRegistry(
   workingDir: string,
   allowedTools?: string[],
   contextAccess?: ContextAccess,
+  permissionAccess?: PermissionAccess,
+  sandbox?: Sandbox,
 ): ToolRegistry {
   const session: ToolSessionState = { fsEpoch: 0 };
   const tools = new Map<string, ToolFunction>();
 
-  const builtins: ToolFunction[] = [
-    createReadFileTool(workingDir, session),
-    createWriteFileTool(workingDir, session),
-    createListFilesTool(workingDir, session),
-    createRunCommandTool(workingDir, session),
-    createSearchFilesTool(workingDir),
-  ];
+  // When sandbox is active, use sandbox-wrapped tools for filesystem operations.
+  // Read-only tools (search_files) still use the real FS — sandbox only affects writes.
+  const builtins: ToolFunction[] = sandbox
+    ? [
+        createSandboxReadFileTool(workingDir, sandbox),
+        createSandboxWriteFileTool(workingDir, sandbox),
+        createSandboxListFilesTool(workingDir, sandbox),
+        createSandboxRunCommandTool(workingDir, sandbox),
+        createSearchFilesTool(workingDir),
+      ]
+    : [
+        createReadFileTool(workingDir, session),
+        createWriteFileTool(workingDir, session),
+        createListFilesTool(workingDir, session),
+        createRunCommandTool(workingDir, session),
+        createSearchFilesTool(workingDir),
+      ];
 
   if (contextAccess) {
     builtins.push(
@@ -98,6 +132,18 @@ export function createToolRegistry(
   async function execute(name: string, args: Record<string, unknown>): Promise<Result<string>> {
     const tool = tools.get(name);
     if (!tool) return err(new Error(`Unknown tool: ${name}`));
+
+    // Permission check (if engine is wired)
+    if (permissionAccess) {
+      const action = await permissionAccess.engine.check(
+        name,
+        args,
+        permissionAccess.stageName,
+      );
+      if (action === "deny") {
+        return err(new Error(`Permission denied for ${name}: ${args.path ?? args.command ?? ""}`));
+      }
+    }
 
     const result = await tool.execute(args);
     if (result.ok) {

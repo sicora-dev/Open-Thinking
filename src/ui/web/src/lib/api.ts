@@ -77,6 +77,14 @@ export type RunRow = {
   totalCost: number;
 };
 
+export type PendingPermission = {
+  id: string;
+  tool: string;
+  risk: "safe" | "moderate" | "dangerous";
+  description: string;
+  subject: string;
+};
+
 export type FsEntry = {
   name: string;
   path: string;
@@ -196,7 +204,26 @@ export const api = {
       cancellable: boolean;
     }>(`/api/runs/${id}`),
   cancelRun: (id: string) =>
-    req<{ ok: boolean }>(`/api/runs/${id}/cancel`, { method: "POST" }),
+    req<{ ok: boolean; stale?: boolean }>(`/api/runs/${id}/cancel`, { method: "POST" }),
+  listRunPermissions: (id: string) =>
+    req<{ pending: PendingPermission[] }>(`/api/runs/${id}/permissions`).then((r) => r.pending),
+  resolveRunPermission: (
+    id: string,
+    requestId: string,
+    action: "allow" | "deny",
+    remember = false,
+  ) =>
+    req<{ ok: boolean }>(`/api/runs/${id}/permission`, {
+      method: "POST",
+      body: JSON.stringify({ requestId, action, remember }),
+    }),
+
+  /** Inject a user message into a running orchestrated pipeline. */
+  injectMessage: (id: string, message: string) =>
+    req<{ ok: boolean }>(`/api/runs/${id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
 
   // Context
   listContext: (options?: { projectId?: string; prefix?: string }) => {
@@ -279,4 +306,5 @@ export const api = {
     ),
   readFile: (path: string) =>
     req<{ content: string | null; tooBig: boolean }>(`/api/fs/read?path=${encodeURIComponent(path)}`),
+  serveUrl: (path: string) => `/api/fs/serve?path=${encodeURIComponent(path)}`,
 };

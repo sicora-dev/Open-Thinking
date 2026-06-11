@@ -65,6 +65,15 @@ type Payload = Record<string, unknown> & {
   error?: string;
   rule?: string;
   detail?: string;
+  remembered?: boolean;
+  requestId?: string;
+  request?: {
+    id?: string;
+    tool?: string;
+    risk?: "safe" | "moderate" | "dangerous";
+    description?: string;
+    subject?: string;
+  };
   result?: Record<string, unknown> & {
     stageName?: string;
     status?: StageProjection["status"];
@@ -101,8 +110,13 @@ const EVENT_LEVEL: Record<string, ProjectedLogLine["level"]> = {
   "tokens:update": "model",
   "thinking:start": "model",
   "thinking:end": "model",
+  "permission:request": "warn",
+  "permission:granted": "ok",
+  "permission:denied": "err",
+  "permission:auto-allowed": "ok",
   "pipeline:start": "info",
   "pipeline:complete": "ok",
+  "user-message:received": "info",
   "run:done": "ok",
   "run:error": "err",
 };
@@ -126,6 +140,11 @@ export const RUN_EVENT_TYPES = [
   "tokens:update",
   "thinking:start",
   "thinking:end",
+  "permission:request",
+  "permission:granted",
+  "permission:denied",
+  "permission:auto-allowed",
+  "user-message:received",
   "run:done",
   "run:error",
 ];
@@ -134,8 +153,8 @@ export function projectRun(run: RunRow, events: RunEvent[]): RunProjection {
   const stages = new Map<string, StageProjection>();
   const eventLogs: ProjectedLogLine[] = [];
   const contextActivities: ContextActivity[] = [];
-  let totalTokens = run.totalTokens ?? 0;
-  let totalCost = run.totalCost ?? 0;
+  let totalTokens = 0;
+  let totalCost = 0;
 
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const payload = asPayload(event.payload);
@@ -157,8 +176,8 @@ export function projectRun(run: RunRow, events: RunEvent[]): RunProjection {
         ...resultStage.keysWritten,
         ...(payload.result.contextKeysWritten ?? []),
       ]);
-      totalTokens = Math.max(totalTokens, resultStage.tokens ?? 0);
-      totalCost = Math.max(totalCost, resultStage.cost ?? 0);
+      totalTokens += resultStage.tokens ?? 0;
+      totalCost += resultStage.cost ?? 0;
       const files = payload.result.workSummary?.filesWritten ?? [];
       const commands = payload.result.workSummary?.commandsRun ?? [];
       for (const file of files) resultStage.logs.push(`file written: ${file}`);
@@ -190,8 +209,9 @@ export function projectRun(run: RunRow, events: RunEvent[]): RunProjection {
       stage.model = stringOrNull(payload.model) ?? stage.model;
       stage.provider = stringOrNull(payload.providerType) ?? stage.provider;
       stage.iteration = numberOrNull(payload.iteration) ?? stage.iteration;
+      const prevTokens = stage.tokens ?? 0;
       stage.tokens = numberOrNull(payload.usage?.totalTokens) ?? stage.tokens;
-      totalTokens = Math.max(totalTokens, stage.tokens ?? 0);
+      totalTokens += (stage.tokens ?? 0) - prevTokens;
     }
 
     if (event.type === "context:read" && stage && payload.key) {
@@ -240,6 +260,12 @@ export function projectRun(run: RunRow, events: RunEvent[]): RunProjection {
 
   const stageList = [...stages.values()];
   const activeStage = [...stageList].reverse().find((stage) => stage.status === "running") ?? null;
+
+  // If no events contributed token/cost data, fall back to the persisted run totals
+  if (totalTokens === 0 && totalCost === 0) {
+    totalTokens = run.totalTokens ?? 0;
+    totalCost = run.totalCost ?? 0;
+  }
 
   return {
     stages: stageList,
@@ -323,6 +349,7 @@ function getStageName(type: string, payload: Payload): string | null {
   if (payload.stageName) return payload.stageName;
   if (type === "stage:complete" && payload.result?.stageName) return payload.result.stageName;
   if (type.startsWith("delegate:") && payload.agentName) return payload.agentName;
+  if (type.startsWith("permission:") && payload.stageName) return payload.stageName;
   return null;
 }
 
@@ -342,9 +369,20 @@ function summarizeStageEvent(type: string, payload: Payload): string | null {
   if (type === "tokens:update") return `tokens ${payload.usage?.totalTokens ?? 0}${payload.iteration != null ? ` at iteration ${payload.iteration}` : ""}`;
   if (type === "thinking:start") return "waiting for model";
   if (type === "thinking:end") return "model response received";
+  if (type === "permission:request") {
+    return `permission requested for ${payload.request?.tool ?? "tool"}: ${payload.request?.description ?? ""}`;
+  }
+  if (type === "permission:granted") {
+    return `permission granted${payload.remembered ? " and remembered" : ""}`;
+  }
+  if (type === "permission:denied") {
+    return `permission denied${payload.remembered ? " and remembered" : ""}`;
+  }
+  if (type === "permission:auto-allowed") return `permission auto-allowed for ${payload.tool ?? "tool"}`;
   if (type === "delegate:start") return `delegate started${payload.model ? ` on ${payload.model}` : ""}`;
   if (type === "delegate:complete") return `delegate completed${payload.durationMs ? ` in ${formatDurationMs(payload.durationMs)}` : ""}`;
   if (type === "delegate:error") return `delegate error: ${payload.error ?? ""}`;
+  if (type === "user-message:received") return `user: ${payload.message ?? ""}`;
   return null;
 }
 
@@ -363,9 +401,18 @@ function summarizeEvent(type: string, payload: Payload): string {
   if (type === "tokens:update") return `${payload.stageName ?? "stage"} ${payload.usage?.totalTokens ?? 0} tokens`;
   if (type === "thinking:start") return `${payload.stageName ?? "stage"} waiting for model`;
   if (type === "thinking:end") return `${payload.stageName ?? "stage"} model response received`;
+  if (type === "permission:request") {
+    return `${payload.stageName ?? "stage"} needs permission for ${payload.request?.tool ?? "tool"}: ${payload.request?.description ?? ""}`;
+  }
+  if (type === "permission:granted") return `${payload.stageName ?? "stage"} permission granted`;
+  if (type === "permission:denied") return `${payload.stageName ?? "stage"} permission denied`;
+  if (type === "permission:auto-allowed") {
+    return `${payload.stageName ?? "stage"} auto-allowed ${payload.tool ?? "tool"}`;
+  }
   if (type === "delegate:start") return `${payload.agentName ?? "delegate"} started`;
   if (type === "delegate:complete") return `${payload.agentName ?? "delegate"} completed`;
   if (type === "delegate:error") return `${payload.agentName ?? "delegate"} error: ${payload.error ?? ""}`;
+  if (type === "user-message:received") return `user message: ${(payload.message as string)?.slice(0, 120) ?? ""}`;
   if (type === "run:done") return `run finished`;
   if (type === "run:error") return `run error: ${payload.error ?? ""}`;
   return JSON.stringify(payload).slice(0, 160);

@@ -4,6 +4,8 @@
  * and failure routing (retry, re-route).
  */
 import type { EventBus } from "../../core/events/event-bus";
+import type { PermissionEngine } from "../../core/permissions";
+import { type Sandbox, createSandbox } from "../../core/sandbox";
 import type { PolicyEngine } from "../../policies/engine";
 import { estimateCost as estimateCostFromPricing, isLocalProvider } from "../../providers/pricing";
 import { loadSkillDefinition } from "../../skills/catalog";
@@ -27,7 +29,12 @@ import {
   readLearned,
   readRecentHistory,
 } from "../../workspace";
-import { type AgentLoopConfig, type AgentLoopResult, runAgentLoop } from "./agent-loop";
+import {
+  type AgentLoopConfig,
+  type AgentLoopResult,
+  type WorkSummary,
+  runAgentLoop,
+} from "./agent-loop";
 
 export type ExecutorDeps = {
   config: PipelineConfig;
@@ -46,6 +53,25 @@ export type ExecutorDeps = {
    * Returns true to continue, false to stop.
    */
   onTokenLimit?: (stageName: string, summary: import("./agent-loop").WorkSummary) => Promise<boolean>;
+  /** Permission engine for human-in-the-loop tool approval. */
+  permissionEngine?: PermissionEngine;
+  /**
+   * Callback invoked when a stage running in sandbox mode finishes.
+   * The sandbox contains the staged changes. Return "apply" to write
+   * changes to the real filesystem, or "discard" to throw them away.
+   */
+  onSandboxReview?: (stageName: string, sandbox: Sandbox) => Promise<"apply" | "discard">;
+  /**
+   * Callback invoked when a stage fails after all retries are exhausted.
+   * Return "retry" to try once more, "skip" to skip the stage, or
+   * "abort" to stop the pipeline.
+   */
+  onStageError?: (stageName: string, error: string) => Promise<ErrorRecoveryAction>;
+  /**
+   * Returns pending user messages injected mid-execution.
+   * Only used in orchestrated mode — messages go to the orchestrator's agent loop.
+   */
+  getInjectedMessages?: () => import("../../shared/types").Message[];
 };
 
 /**
@@ -218,6 +244,57 @@ function formatBytesShort(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+function mergeWorkSummaries(...summaries: Array<WorkSummary | undefined>): WorkSummary {
+  const filesWritten = new Set<string>();
+  const commandsRun = new Set<string>();
+
+  for (const summary of summaries) {
+    for (const file of summary?.filesWritten ?? []) filesWritten.add(file);
+    for (const command of summary?.commandsRun ?? []) commandsRun.add(command);
+  }
+
+  return {
+    filesWritten: [...filesWritten],
+    commandsRun: [...commandsRun],
+  };
+}
+
+function hasRecordedWork(summary: WorkSummary): boolean {
+  return summary.filesWritten.length > 0 || summary.commandsRun.length > 0;
+}
+
+function normalizePromptText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
+function promptRequiresFileWrite(prompt: string): boolean {
+  const text = normalizePromptText(prompt);
+  const action =
+    /\b(crea|crear|creame|genera|generar|haz|hacer|escribe|escribir|guarda|guardar|modifica|modificar|edita|editar|actualiza|actualizar|cambia|cambiar|corrige|corregir|arregla|arreglar|create|generate|write|save|modify|edit|update|fix)\b/.test(
+      text,
+    );
+  const artifact =
+    /\b(archivo|fichero|documento|csv|json|txt|md|markdown|html|css|js|jsx|ts|tsx|py|xml|yaml|yml|sql|xlsx|excel|readme|package)\b/.test(
+      text,
+    );
+  return action && artifact;
+}
+
+function validateOrchestratedWork(inputPrompt: string, summary: WorkSummary): string | null {
+  if (promptRequiresFileWrite(inputPrompt) && summary.filesWritten.length === 0) {
+    return "The user requested creating or modifying a file, but no agent wrote any file. The pipeline produced text only instead of creating the requested artifact in the workspace.";
+  }
+
+  if (!hasRecordedWork(summary)) {
+    return "Orchestrated run finished without any recorded work. At least one delegated agent must create or modify files, or run a command that performs the requested project work.";
+  }
+
+  return null;
+}
+
 /**
  * Write stage output to context store, respecting write policies.
  */
@@ -290,6 +367,12 @@ async function executeStage(
     };
   }
 
+  // Auto-snapshot context before this stage runs, so it can be rolled back
+  if ("saveSnapshot" in contextStore) {
+    const store = contextStore as ReturnType<typeof import("../../context/store").createContextStore>;
+    store.saveSnapshot(`auto:before:${stageName}`, "system", `Auto-snapshot before stage "${stageName}"`);
+  }
+
   // Seed lazy persistent context (learned + history) into the context store
   // so the agent can fetch it via get_context. This must happen *before*
   // we build the context payload so the keys appear in the index.
@@ -323,14 +406,25 @@ async function executeStage(
   // Load skill prompt + manifest (tool permissions)
   const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
 
+  // Determine if this stage should run in a sandbox
+  const stagePermissionMode = stageDef.permissions ?? deps.config.permissions ?? "confirm";
+  const useSandbox = stagePermissionMode === "sandbox";
+  const sandbox = useSandbox ? createSandbox(deps.workingDir, `${stageName}-${Date.now()}`) : undefined;
+
   // Resolve tool permissions: stage YAML overrides > skill manifest > all tools
   const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
-  const toolRegistry = createToolRegistry(deps.workingDir, allowedTools, {
-    contextStore,
-    permissions: stageDef.context,
-    policyEngine,
-    stageName,
-  });
+  const toolRegistry = createToolRegistry(
+    deps.workingDir,
+    allowedTools,
+    {
+      contextStore,
+      permissions: stageDef.context,
+      policyEngine,
+      stageName,
+    },
+    deps.permissionEngine ? { engine: deps.permissionEngine, stageName } : undefined,
+    sandbox,
+  );
 
   // Build chat request — inject persistent context (project soul, user prefs, etc.)
   const persistentCtx = loadStageContext(deps.workingDir, stageName);
@@ -432,6 +526,30 @@ async function executeStage(
     });
   }
 
+  // Sandbox review: if the stage ran in a sandbox, ask the user to review
+  let sandboxApplied = false;
+  if (sandbox) {
+    const diffs = sandbox.diff();
+    if (diffs.length > 0 && deps.onSandboxReview) {
+      const decision = await deps.onSandboxReview(stageName, sandbox);
+      if (decision === "apply") {
+        const applyResult = sandbox.apply();
+        if (applyResult.ok) {
+          sandboxApplied = true;
+        } else {
+          eventBus.emit({ type: "stage:warning", stageName, message: `Sandbox apply failed: ${applyResult.error.message}` });
+        }
+      } else {
+        sandbox.discard();
+      }
+    } else if (diffs.length === 0) {
+      sandbox.discard();
+    } else {
+      // No review callback — auto-discard
+      sandbox.discard();
+    }
+  }
+
   const result: StageResult = {
     stageName,
     status: "success",
@@ -443,6 +561,7 @@ async function executeStage(
     contextKeysWritten,
     stopReason: agentResult.stopReason,
     workSummary: agentResult.workSummary,
+    sandboxApplied: sandbox ? sandboxApplied : undefined,
   };
 
   eventBus.emit({ type: "stage:complete", result });
@@ -473,12 +592,58 @@ function isRateLimitFailure(result: StageResult): boolean {
   return result.error.includes("RATE_LIMIT") || result.error.includes("429");
 }
 
+/** Base delay for exponential backoff between retries (ms). */
+const RETRY_BASE_DELAY_MS = 1000;
+/** Max delay cap for exponential backoff (ms). */
+const RETRY_MAX_DELAY_MS = 30_000;
+
 /**
- * Execute a stage with retry support and model fallback chain.
+ * Compute exponential backoff delay with jitter.
+ * delay = min(base * 2^attempt + random jitter, maxDelay)
+ */
+function retryDelay(attempt: number): number {
+  const exponential = RETRY_BASE_DELAY_MS * 2 ** attempt;
+  const jitter = Math.random() * RETRY_BASE_DELAY_MS;
+  return Math.min(exponential + jitter, RETRY_MAX_DELAY_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Rollback context to the most recent auto-snapshot for a stage.
+ * Returns true if rollback was performed.
+ */
+function rollbackContext(
+  contextStore: ContextStore,
+  stageName: string,
+): boolean {
+  if (!("listSnapshots" in contextStore)) return false;
+  const store = contextStore as ReturnType<typeof import("../../context/store").createContextStore>;
+  const snapshots = store.listSnapshots();
+  if (!snapshots.ok) return false;
+
+  // Find the most recent auto-snapshot for this stage
+  const autoSnap = snapshots.value.find((s) => s.name === `auto:before:${stageName}`);
+  if (!autoSnap) return false;
+
+  const result = store.restoreSnapshot(autoSnap.id);
+  return result.ok;
+}
+
+/** Possible outcomes when the user is asked what to do on stage error. */
+export type ErrorRecoveryAction = "retry" | "skip" | "abort";
+
+/**
+ * Execute a stage with retry support, exponential backoff, context
+ * rollback, model fallback chain, and pause-on-error.
  *
- * 1. Run the stage with its primary model (retries are handled at the HTTP level by the adapter)
- * 2. If it fails with on_fail config, retry the stage itself
- * 3. If it still fails with a RATE_LIMIT error and fallback_models are defined, try the next model
+ * 1. Run the stage with its primary model
+ * 2. If it fails with on_fail config, retry with exponential backoff
+ *    and context rollback between attempts
+ * 3. If still failing due to rate limits and fallback_models exist, try next model
+ * 4. If still failing and onStageError callback exists, pause and ask the user
  */
 async function executeStageWithRetry(
   stageName: string,
@@ -487,11 +652,28 @@ async function executeStageWithRetry(
 ): Promise<StageResult> {
   let result = await executeStage(stageName, stageDef, deps);
 
-  // Stage-level retries (on_fail config)
+  // Stage-level retries (on_fail config) with exponential backoff
   if (result.status === "failed" && stageDef.on_fail) {
     const { max_retries, inject_context } = stageDef.on_fail;
 
     for (let attempt = 0; attempt < max_retries && result.status === "failed"; attempt++) {
+      // Exponential backoff
+      const delay = retryDelay(attempt);
+      deps.eventBus.emit({
+        type: "stage:warning",
+        stageName,
+        message: `Retry ${attempt + 1}/${max_retries} in ${Math.round(delay / 1000)}s...`,
+      });
+      await sleep(delay);
+
+      // Check for cancellation during backoff
+      if (deps.signal?.aborted) {
+        return { stageName, status: "cancelled", durationMs: 0, contextKeysWritten: [] };
+      }
+
+      // Rollback context to pre-stage state
+      rollbackContext(deps.contextStore, stageName);
+
       if (inject_context && result.error) {
         await deps.contextStore.set(inject_context, result.error, stageName);
       }
@@ -513,14 +695,29 @@ async function executeStageWithRetry(
         toModel: fallbackModel,
       });
 
-      // Create a modified stage def with the fallback model
+      // Rollback context before trying with fallback model
+      rollbackContext(deps.contextStore, stageName);
+
       const fallbackDef = { ...stageDef, model: fallbackModel };
       result = await executeStage(stageName, fallbackDef, deps);
 
       if (result.status !== "failed" || !isRateLimitFailure(result)) {
-        break; // Either succeeded or failed for a non-rate-limit reason
+        break;
       }
     }
+  }
+
+  // Pause-on-error: if still failed and callback exists, ask the user
+  if (result.status === "failed" && deps.onStageError) {
+    const action = await deps.onStageError(stageName, result.error ?? "Unknown error");
+
+    if (action === "retry") {
+      rollbackContext(deps.contextStore, stageName);
+      result = await executeStage(stageName, stageDef, deps);
+    } else if (action === "skip") {
+      return { ...result, status: "skipped" };
+    }
+    // "abort" — leave the result as failed, pipeline will stop
   }
 
   return result;
@@ -558,7 +755,15 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     skillsDir: deps.skillsDir,
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit,
+    permissionEngine: deps.permissionEngine,
     runAgentLoop,
+  });
+
+  // Track delegate agent tokens/cost via events
+  const delegateResults: { usage?: TokenUsage; cost?: number }[] = [];
+  const unsubDelegate = eventBus.on("delegate:complete", (evt) => {
+    if (evt.type !== "delegate:complete") return;
+    delegateResults.push({ usage: evt.result.usage, cost: evt.result.cost });
   });
 
   // Execute the orchestrator stage with the delegate tool injected
@@ -569,11 +774,23 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     delegateTool,
   );
 
+  unsubDelegate();
+
+  // Accumulate tokens from orchestrator + all delegated agents
   const totalTokens: TokenUsage = {
     promptTokens: result.usage?.promptTokens ?? 0,
     completionTokens: result.usage?.completionTokens ?? 0,
     totalTokens: result.usage?.totalTokens ?? 0,
   };
+  let totalCostAccum = result.cost ?? 0;
+  for (const dr of delegateResults) {
+    if (dr.usage) {
+      totalTokens.promptTokens += dr.usage.promptTokens;
+      totalTokens.completionTokens += dr.usage.completionTokens;
+      totalTokens.totalTokens += dr.usage.totalTokens;
+    }
+    totalCostAccum += dr.cost ?? 0;
+  }
 
   const pipelineResult: PipelineRunResult = {
     pipelineName: config.name,
@@ -581,7 +798,7 @@ async function executeOrchestrated(deps: ExecutorDeps): Promise<Result<PipelineR
     status: result.status === "success" ? "success" : "failed",
     stages: [result],
     totalDurationMs: Date.now() - start,
-    totalCost: result.cost ?? 0,
+    totalCost: totalCostAccum,
     totalTokens,
   };
 
@@ -626,6 +843,7 @@ async function executeStageWithDelegateTool(
     contextResult.value,
     stageDef.context.eager === true,
   );
+  const inputPrompt = contextResult.value["input.prompt"] ?? "";
 
   // Load skill
   const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
@@ -633,6 +851,11 @@ async function executeStageWithDelegateTool(
   // Orchestrator only gets the delegate tool — no filesystem tools.
   // If it could read/write files, it would do everything itself and never delegate.
   let delegated = false;
+  let delegatedWorkSummary: WorkSummary = { filesWritten: [], commandsRun: [] };
+  const unsubscribeDelegateComplete = eventBus.on("delegate:complete", (evt) => {
+    if (evt.type !== "delegate:complete") return;
+    delegatedWorkSummary = mergeWorkSummaries(delegatedWorkSummary, evt.result.workSummary);
+  });
   const orchestratorRegistry = {
     definitions: () => [{ name: delegateTool.name, description: delegateTool.description, parameters: delegateTool.parameters }],
     execute: async (name: string, args: Record<string, unknown>) => {
@@ -683,7 +906,9 @@ async function executeStageWithDelegateTool(
     signal: deps.signal,
     onTokenLimit: deps.onTokenLimit ? (summary) => deps.onTokenLimit!(stageName, summary) : undefined,
     requireToolCallOnFirstIteration: true,
+    getInjectedMessages: deps.getInjectedMessages,
   });
+  unsubscribeDelegateComplete();
 
   if (!loopResult.ok) {
     eventBus.emit({ type: "stage:error", stageName, error: loopResult.error.message });
@@ -691,6 +916,7 @@ async function executeStageWithDelegateTool(
   }
 
   const agentResult = loopResult.value;
+  const combinedWorkSummary = mergeWorkSummaries(agentResult.workSummary, delegatedWorkSummary);
   if (!delegated) {
     const error =
       "Orchestrator finished without delegating any task. Ensure the model supports tool calling and that the orchestrator skill was loaded.";
@@ -702,6 +928,7 @@ async function executeStageWithDelegateTool(
       error,
       usage: agentResult.totalUsage,
       contextKeysWritten: [],
+      workSummary: combinedWorkSummary,
     };
   }
 
@@ -711,6 +938,24 @@ async function executeStageWithDelegateTool(
   if (!costCheck.ok) {
     eventBus.emit({ type: "stage:error", stageName, error: costCheck.error.message });
     return { stageName, status: "failed", durationMs: Date.now() - start, error: costCheck.error.message, usage: agentResult.totalUsage, cost, contextKeysWritten: [] };
+  }
+
+  const workError = validateOrchestratedWork(inputPrompt, combinedWorkSummary);
+  if (workError) {
+    eventBus.emit({ type: "stage:error", stageName, error: workError });
+    return {
+      stageName,
+      status: "failed",
+      output: agentResult.finalContent,
+      usage: agentResult.totalUsage,
+      breakdown: agentResult.breakdown,
+      cost,
+      durationMs: Date.now() - start,
+      error: workError,
+      contextKeysWritten: [],
+      stopReason: agentResult.stopReason,
+      workSummary: combinedWorkSummary,
+    };
   }
 
   // Write orchestrator output to context
@@ -727,7 +972,7 @@ async function executeStageWithDelegateTool(
     durationMs: Date.now() - start,
     contextKeysWritten,
     stopReason: agentResult.stopReason,
-    workSummary: agentResult.workSummary,
+    workSummary: combinedWorkSummary,
   };
 
   eventBus.emit({ type: "stage:complete", result });

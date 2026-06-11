@@ -13,6 +13,7 @@ import {
 } from "../lib/workspace-selection";
 import { Icons } from "./Icons";
 import { Logomark } from "./Logomark";
+import { PermissionCenter } from "./PermissionCenter";
 
 type NavGroup = {
   group: string;
@@ -518,6 +519,7 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
         {/* View body */}
         <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
       </main>
+      <PermissionCenter />
     </div>
   );
 }

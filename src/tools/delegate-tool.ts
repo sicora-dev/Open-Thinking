@@ -6,6 +6,7 @@
  * runs its full agent loop. The output is returned as the tool result.
  */
 import type { EventBus } from "../core/events/event-bus";
+import type { PermissionEngine } from "../core/permissions";
 import type { PolicyEngine } from "../policies/engine";
 import { loadSkillDefinition } from "../skills/catalog";
 import { type Result, err, ok } from "../shared/result";
@@ -17,6 +18,7 @@ import type {
   StageDefinition,
   ToolFunction,
 } from "../shared/types";
+import { estimateCost, isLocalProvider } from "../providers/pricing";
 import { formatPersistentContext, loadStageContext } from "../workspace";
 import { createToolRegistry } from "./tool-registry";
 
@@ -29,6 +31,7 @@ export type DelegateDeps = {
   workingDir: string;
   skillsDir?: string | string[];
   signal?: AbortSignal;
+  permissionEngine?: PermissionEngine;
   onTokenLimit?: (stageName: string, summary: { filesWritten: string[]; commandsRun: string[] }) => Promise<boolean>;
   /** Dynamically imported to avoid circular deps. Set by the executor before use. */
   runAgentLoop: (config: import("../pipeline/executor/agent-loop").AgentLoopConfig) => Promise<Result<import("../pipeline/executor/agent-loop").AgentLoopResult>>;
@@ -107,12 +110,17 @@ export function createDelegateTool(deps: DelegateDeps): ToolFunction {
       // Load skill
       const skill = loadSkillDefinition(stageDef.skill, deps.skillsDir);
       const allowedTools = stageDef.allowed_tools ?? skill.allowedTools ?? undefined;
-      const toolRegistry = createToolRegistry(deps.workingDir, allowedTools, {
-        contextStore: deps.contextStore,
-        permissions: stageDef.context,
-        policyEngine: deps.policyEngine,
-        stageName: agentName,
-      });
+      const toolRegistry = createToolRegistry(
+        deps.workingDir,
+        allowedTools,
+        {
+          contextStore: deps.contextStore,
+          permissions: stageDef.context,
+          policyEngine: deps.policyEngine,
+          stageName: agentName,
+        },
+        deps.permissionEngine ? { engine: deps.permissionEngine, stageName: agentName } : undefined,
+      );
 
       // Build persistent context
       const persistentCtx = loadStageContext(deps.workingDir, agentName);
@@ -177,6 +185,10 @@ export function createDelegateTool(deps: DelegateDeps): ToolFunction {
 
       const delegateDuration = Date.now() - delegateStart;
 
+      // Calculate cost for the delegated agent
+      const providerType = deps.config.providers[stageDef.provider]?.type ?? "openai-compatible";
+      const delegateCost = estimateCost(agentResult.totalUsage, stageDef.model, isLocalProvider(providerType)) ?? 0;
+
       // Emit delegate:complete
       deps.eventBus.emit({
         type: "delegate:complete",
@@ -187,6 +199,7 @@ export function createDelegateTool(deps: DelegateDeps): ToolFunction {
           status: "success",
           output: agentResult.finalContent,
           usage: agentResult.totalUsage,
+          cost: delegateCost,
           durationMs: delegateDuration,
           contextKeysWritten: writeCheck.ok ? [outputKey] : [],
           stopReason: agentResult.stopReason,
@@ -251,6 +264,11 @@ function buildDelegateSummary(
   }
   if (work.commandsRun.length > 0) {
     lines.push(`Commands run: ${work.commandsRun.length}`);
+  }
+  if (work.filesWritten.length === 0 && work.commandsRun.length === 0) {
+    lines.push(
+      "No files were written and no commands were run. This is not a completed implementation for a task that should create or modify workspace artifacts.",
+    );
   }
 
   lines.push("", "--- Output preview ---", preview);

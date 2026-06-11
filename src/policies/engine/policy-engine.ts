@@ -14,6 +14,9 @@ import type { GlobalPolicies, StageContextPermissions } from "../../shared/types
  * Segments are separated by `.`.
  */
 export function matchGlob(pattern: string, key: string): boolean {
+  // Historical pipeline examples use "*" to mean "all context keys".
+  // Keep segment-level "*" behavior for patterns like "plan.*".
+  if (pattern === "*") return true;
   const patternParts = pattern.split(".");
   const keyParts = key.split(".");
   return globMatch(patternParts, 0, keyParts, 0);

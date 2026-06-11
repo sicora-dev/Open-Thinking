@@ -20,13 +20,13 @@ import { Skills } from "./views/Skills";
 
 type Route =
   | { name: "dashboard" }
-  | { name: "run" }
+  | { name: "run"; runId?: string }
   | { name: "pipelines" }
   | { name: "pipelineEditor"; id: string }
   | { name: "projects" }
   | { name: "project"; id: string }
   | { name: "runs" }
-  | { name: "runDetail"; id: string }
+  | { name: "runDetail"; id: string; from?: string }
   | { name: "providers" }
   | { name: "skills" }
   | { name: "context" }
@@ -37,7 +37,11 @@ type Route =
 function parseHash(): Route {
   const h = window.location.hash.replace(/^#\/?/, "");
   if (!h || h === "dashboard") return { name: "dashboard" };
-  if (h === "run") return { name: "run" };
+  if (h === "run" || h.startsWith("run?")) {
+    const [, query = ""] = h.split("?");
+    const runId = new URLSearchParams(query).get("runId") ?? undefined;
+    return { name: "run", runId };
+  }
   if (h === "pipelines") return { name: "pipelines" };
   if (h.startsWith("pipelines/"))
     return { name: "pipelineEditor", id: h.slice("pipelines/".length) };
@@ -45,8 +49,12 @@ function parseHash(): Route {
   if (h.startsWith("projects/"))
     return { name: "project", id: h.slice("projects/".length) };
   if (h === "runs") return { name: "runs" };
-  if (h.startsWith("runs/"))
-    return { name: "runDetail", id: h.slice("runs/".length) };
+  if (h.startsWith("runs/")) {
+    const raw = h.slice("runs/".length);
+    const [id, query = ""] = raw.split("?");
+    const from = new URLSearchParams(query).get("from") ?? undefined;
+    return { name: "runDetail", id, from };
+  }
   if (h === "providers") return { name: "providers" };
   if (h === "skills") return { name: "skills" };
   if (h === "context") return { name: "context" };
@@ -58,6 +66,8 @@ function parseHash(): Route {
 
 function routeToActive(route: Route): string {
   if (route.name === "pipelineEditor") return "pipelines";
+  if (route.name === "runDetail" && route.from === "run") return "run";
+  if (route.name === "runDetail" && route.from === "logs") return "logs";
   if (route.name === "runDetail") return "history";
   if (route.name === "runs") return "history";
   return route.name;
@@ -99,7 +109,7 @@ export default function App() {
     <ToastProvider>
       <Layout active={active} onOpenPalette={handleOpenPalette}>
         {route.name === "dashboard" && <Dashboard />}
-        {route.name === "run" && <RunPipeline />}
+        {route.name === "run" && <RunPipeline initialRunId={route.runId} />}
         {route.name === "pipelines" && <Pipelines />}
         {route.name === "pipelineEditor" && (
           <PipelineEditor pipelineId={route.id} />
@@ -107,7 +117,7 @@ export default function App() {
         {route.name === "projects" && <Projects />}
         {route.name === "project" && <ProjectDetail projectId={route.id} />}
         {route.name === "runs" && <History />}
-        {route.name === "runDetail" && <RunDetail runId={route.id} />}
+        {route.name === "runDetail" && <RunDetail runId={route.id} from={route.from} />}
         {route.name === "providers" && <Providers />}
         {route.name === "skills" && <Skills />}
         {route.name === "context" && <ContextStore />}

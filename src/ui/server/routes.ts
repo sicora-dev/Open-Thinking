@@ -20,7 +20,17 @@
  *   GET    /api/runs/:id                        — single run + summary
  *   GET    /api/runs/:id/stream                 — SSE event stream
  *   POST   /api/runs/:id/cancel                 — abort
+ *   POST   /api/runs/:id/permission             — resolve a pending permission request
+ *   GET    /api/runs/:id/permissions            — list pending permission requests
+ *   POST   /api/runs/:id/error-recovery        — resolve error recovery (retry/skip/abort)
+ *   GET    /api/runs/:id/error-recovery        — get pending error recovery state
+ *   POST   /api/runs/:id/message               — inject user message into orchestrator
  *   GET    /api/context                         — inspect project context stores
+ *   GET    /api/context/snapshots               — list snapshots for a project
+ *   POST   /api/context/snapshots               — save a snapshot
+ *   POST   /api/context/snapshots/restore       — restore from a snapshot
+ *   DELETE /api/context/snapshots/:id           — delete a snapshot
+ *   GET    /api/context/stats                   — compression statistics
  *   GET    /api/providers                       — catalog + key status
  *   POST   /api/providers                       — add/update API key
  *   DELETE /api/providers/:id                   — remove key
@@ -31,6 +41,10 @@
  *   GET    /api/skills/content                  — load a skill prompt + manifest
  *   PUT    /api/skills/content                  — save a skill prompt + manifest
  *   DELETE /api/skills/content                  — delete a skill folder
+ *   GET    /api/permissions                      — list permission rules
+ *   PUT    /api/permissions                      — add/update a permission rule
+ *   DELETE /api/permissions                      — remove permission rule(s)
+ *   DELETE /api/permissions/all                  — clear all rules
  *   GET    /api/fs/browse                       — directory listing for path picker
  */
 import {
@@ -78,12 +92,15 @@ import {
   unregisterProject,
 } from "./projects-index";
 import {
+  appendEvent,
+  finalizeRun,
   type RunStatus,
   getRun,
   getRunEvents,
   listRuns,
+  updateRunTotals,
 } from "./runs-store";
-import { startRun, cancelRun, subscribeRun, isRunActive } from "./run-manager";
+import { startRun, cancelRun, subscribeRun, isRunActive, resolvePermission, listPendingPermissions, resolveErrorRecovery, getPendingErrorRecovery, injectMessage } from "./run-manager";
 import {
   createSkillInRoot,
   deleteSkillDocument,
@@ -653,6 +670,52 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     return json({ ok: true, runId: result.value.runId }, 202);
   }
 
+  // POST /api/runs/recalculate-costs — recalculate costs for all historical runs using current pricing table
+  if (method === "POST" && pathname === "/api/runs/recalculate-costs") {
+    const { estimateCost: estimate, isLocalProvider: isLocal } = await import("../../providers/pricing");
+    const allRuns = listRuns(500);
+    let updated = 0;
+
+    for (const run of allRuns) {
+      const events = getRunEvents(run.id, 0);
+
+      // Track the latest tokens:update per stage (they carry cumulative usage for that stage)
+      const stageUsage = new Map<string, { usage: { promptTokens: number; completionTokens: number; totalTokens: number }; model: string; providerType: string }>();
+
+      for (const event of events) {
+        if (event.type !== "tokens:update") continue;
+        const payload = JSON.parse(event.payload) as Record<string, unknown>;
+        const stageName = (payload.stageName as string) ?? "";
+        const usage = payload.usage as { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined;
+        const model = payload.model as string | undefined;
+        const providerType = (payload.providerType as string) ?? "";
+        if (usage && model) {
+          stageUsage.set(stageName, {
+            usage: { promptTokens: usage.promptTokens ?? 0, completionTokens: usage.completionTokens ?? 0, totalTokens: usage.totalTokens ?? 0 },
+            model,
+            providerType,
+          });
+        }
+      }
+
+      // Sum across all stages
+      let totalTokens = 0;
+      let totalCost = 0;
+      for (const stage of stageUsage.values()) {
+        totalTokens += stage.usage.totalTokens;
+        const cost = estimate(stage.usage, stage.model, isLocal(stage.providerType));
+        if (cost !== null) totalCost += cost;
+      }
+
+      if (totalTokens > 0 || totalCost > 0) {
+        updateRunTotals(run.id, { tokens: totalTokens, cost: totalCost });
+        updated++;
+      }
+    }
+
+    return json({ ok: true, updated, total: allRuns.length });
+  }
+
   // ── Runs ───────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/runs") {
     return json({ ok: true, runs: listRuns(100) });
@@ -799,8 +862,86 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
   }
 
   if (runCancelParams && method === "POST") {
-    const ok2 = cancelRun(runCancelParams.id ?? "");
-    return json({ ok: ok2 });
+    const runId = runCancelParams.id ?? "";
+    const activeCancelled = cancelRun(runId);
+    if (activeCancelled) return json({ ok: true, stale: false });
+
+    const run = getRun(runId);
+    if (!run) return notFound();
+    if (run.status === "running") {
+      const events = getRunEvents(runId, 0);
+      const nextSeq = events.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
+      finalizeRun(runId, "cancelled", {
+        tokens: run.totalTokens,
+        cost: run.totalCost,
+      });
+      appendEvent(runId, nextSeq, "run:error", {
+        error: "Run was marked cancelled because its worker process is no longer active.",
+      });
+      appendEvent(runId, nextSeq + 1, "run:done", {
+        status: "cancelled",
+        totalTokens: run.totalTokens,
+        totalCost: run.totalCost,
+        stale: true,
+      });
+      return json({ ok: true, stale: true });
+    }
+
+    return json({ ok: false });
+  }
+
+  // POST /api/runs/:id/permission — resolve a pending permission request
+  const runPermParams = match(pathname, "/api/runs/:id/permission");
+  if (runPermParams && method === "POST") {
+    const body = await readJsonBody<{ requestId: string; action: "allow" | "deny"; remember?: boolean }>(req);
+    if (!body?.requestId || !body?.action) {
+      return badRequest("`requestId` and `action` are required");
+    }
+    const resolved = resolvePermission(
+      runPermParams.id ?? "",
+      body.requestId,
+      body.action,
+      body.remember ?? false,
+    );
+    return json({ ok: resolved });
+  }
+
+  // GET /api/runs/:id/permissions — list pending permission requests
+  const runPermsParams = match(pathname, "/api/runs/:id/permissions");
+  if (runPermsParams && method === "GET") {
+    const pending = listPendingPermissions(runPermsParams.id ?? "");
+    return json({ ok: true, pending });
+  }
+
+  // POST /api/runs/:id/error-recovery — resolve a paused error recovery decision
+  const runErrorParams = match(pathname, "/api/runs/:id/error-recovery");
+  if (runErrorParams && method === "POST") {
+    const body = await readJsonBody<{ action: "retry" | "skip" | "abort" }>(req);
+    if (!body?.action || !["retry", "skip", "abort"].includes(body.action)) {
+      return badRequest("`action` must be 'retry', 'skip', or 'abort'");
+    }
+    const resolved = resolveErrorRecovery(runErrorParams.id ?? "", body.action);
+    return json({ ok: resolved });
+  }
+
+  // GET /api/runs/:id/error-recovery — get pending error recovery state
+  if (runErrorParams && method === "GET") {
+    const pending = getPendingErrorRecovery(runErrorParams.id ?? "");
+    return json({ ok: true, pending });
+  }
+
+  // POST /api/runs/:id/message — inject a user message into a running orchestrated pipeline
+  const runMessageParams = match(pathname, "/api/runs/:id/message");
+  if (runMessageParams && method === "POST") {
+    const body = await readJsonBody<{ message: string }>(req);
+    if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
+      return badRequest("`message` is required and must be a non-empty string");
+    }
+    const accepted = injectMessage(runMessageParams.id ?? "", body.message.trim());
+    if (!accepted) {
+      return badRequest("Run is not active or not an orchestrated pipeline");
+    }
+    return json({ ok: true });
   }
 
   // ── Context stores ─────────────────────────────────────
@@ -852,6 +993,117 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     }
 
     return json({ ok: true, stores });
+  }
+
+  // ── Context snapshots ────────────────────────────────────
+  if (method === "GET" && pathname === "/api/context/snapshots") {
+    const projectId = url.searchParams.get("projectId");
+    if (!projectId) return badRequest("`projectId` is required");
+    const project = getIndexedProject(projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return json({ ok: true, snapshots: [] });
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.listSnapshots();
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, snapshots: result.value });
+    } finally {
+      store.close();
+    }
+  }
+
+  if (method === "POST" && pathname === "/api/context/snapshots") {
+    const body = await readJsonBody<{ projectId: string; name: string; description?: string }>(req);
+    if (!body?.projectId || !body?.name) return badRequest("`projectId` and `name` are required");
+
+    const project = getIndexedProject(body.projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return badRequest("No context store for this project");
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.saveSnapshot(body.name, "ui", body.description);
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, snapshot: result.value });
+    } finally {
+      store.close();
+    }
+  }
+
+  if (method === "POST" && pathname === "/api/context/snapshots/restore") {
+    const body = await readJsonBody<{ projectId: string; snapshotId: string }>(req);
+    if (!body?.projectId || !body?.snapshotId) return badRequest("`projectId` and `snapshotId` are required");
+
+    const project = getIndexedProject(body.projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return badRequest("No context store for this project");
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.restoreSnapshot(body.snapshotId);
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, restored: result.value.restored });
+    } finally {
+      store.close();
+    }
+  }
+
+  const snapshotDeleteParams = match(pathname, "/api/context/snapshots/:id");
+  if (snapshotDeleteParams && method === "DELETE") {
+    const projectId = url.searchParams.get("projectId");
+    if (!projectId) return badRequest("`projectId` query parameter is required");
+
+    const project = getIndexedProject(projectId);
+    if (!project) return notFound("Project not registered");
+
+    const dbPath = join(getProjectDir(project.path), "context.db");
+    if (!existsSync(dbPath)) return badRequest("No context store for this project");
+
+    const store = createContextStore({ dbPath });
+    try {
+      const result = store.deleteSnapshot(snapshotDeleteParams.id ?? "");
+      if (!result.ok) return serverError(result.error.message);
+      return json({ ok: true, deleted: result.value });
+    } finally {
+      store.close();
+    }
+  }
+
+  // ── Context stats (compression) ──────────────────────
+  if (method === "GET" && pathname === "/api/context/stats") {
+    const projectId = url.searchParams.get("projectId");
+    const projects = projectId
+      ? [getIndexedProject(projectId)].filter((project): project is ProjectIndexEntry => project != null)
+      : listIndexedProjects();
+
+    if (projectId && projects.length === 0) return notFound("Project not registered");
+
+    const stats = [];
+    for (const project of projects) {
+      const dbPath = join(getProjectDir(project.path), "context.db");
+      if (!existsSync(dbPath)) {
+        stats.push({ projectId: project.id, projectName: project.name, exists: false });
+        continue;
+      }
+
+      const store = createContextStore({ dbPath });
+      try {
+        const result = store.compressionStats();
+        if (!result.ok) return serverError(result.error.message);
+        stats.push({ projectId: project.id, projectName: project.name, exists: true, ...result.value });
+      } finally {
+        store.close();
+      }
+    }
+
+    return json({ ok: true, stats });
   }
 
   // ── Providers ──────────────────────────────────────────
@@ -1072,6 +1324,41 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
     }
   }
 
+  // ── Permissions ─────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/permissions") {
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    return json({ ok: true, rules: store.listRules() });
+  }
+
+  if (method === "PUT" && pathname === "/api/permissions") {
+    const body = await readJsonBody<{ tool: string; pattern: string; action: "allow" | "deny" }>(req);
+    if (!body || !body.tool || !body.pattern || !body.action) {
+      return badRequest("`tool`, `pattern`, and `action` are required");
+    }
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    store.addRule(body.tool, body.pattern, body.action);
+    return json({ ok: true });
+  }
+
+  if (method === "DELETE" && pathname === "/api/permissions") {
+    const tool = url.searchParams.get("tool");
+    const pattern = url.searchParams.get("pattern") ?? undefined;
+    if (!tool) return badRequest("`tool` query parameter is required");
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    const count = store.removeRule(tool, pattern);
+    return json({ ok: true, removed: count });
+  }
+
+  if (method === "DELETE" && pathname === "/api/permissions/all") {
+    const { createPermissionStore } = await import("../../core/permissions");
+    const store = createPermissionStore();
+    store.clearRules();
+    return json({ ok: true });
+  }
+
   // ── FS browse ──────────────────────────────────────────
   if (method === "GET" && pathname === "/api/fs/browse") {
     const target = url.searchParams.get("path") || homedir();
@@ -1111,6 +1398,30 @@ export async function handleRequest(req: Request, port: number): Promise<Respons
       return json({ ok: true, content, tooBig: false });
     } catch (e) {
       return badRequest(`Cannot read file: ${(e as Error).message}`);
+    }
+  }
+
+  // ── FS serve (raw binary) ──────────────────────────────
+  if (method === "GET" && pathname === "/api/fs/serve") {
+    const target = url.searchParams.get("path");
+    if (!target) return badRequest("path is required");
+    try {
+      const abs = resolve(target);
+      const st = statSync(abs);
+      if (st.isDirectory()) return badRequest("path is a directory");
+      const ext = abs.split(".").pop()?.toLowerCase() ?? "";
+      const MIME: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+        gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+        bmp: "image/bmp", ico: "image/x-icon",
+        pdf: "application/pdf",
+        html: "text/html", htm: "text/html",
+      };
+      const mime = MIME[ext] ?? "application/octet-stream";
+      const content = readFileSync(abs);
+      return new Response(content, { headers: { "Content-Type": mime, "Cache-Control": "no-store" } });
+    } catch (e) {
+      return badRequest(`Cannot serve file: ${(e as Error).message}`);
     }
   }
 

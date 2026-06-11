@@ -5,6 +5,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { type ProviderEntry, listProviders, removeProvider, runSetupWizard } from "../../config";
+import { createPermissionStore } from "../../core/permissions";
 import { getUiAutostart, setUiAutostart } from "../../config/ui-config";
 import { resolveExecutionOrder } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
@@ -697,14 +698,85 @@ const commands: SlashCommand[] = [
   {
     name: "context",
     aliases: ["ctx"],
-    description: "Inspect or clear the context store",
-    usage: "[inspect|clear]",
-    async execute(args) {
-      const sub = args.trim() || "inspect";
+    description: "Manage context: inspect, clear, stats, save/restore snapshots",
+    usage: "[inspect|clear|stats|save <name>|restore <id>|snapshots|delete-snapshot <id>]",
+    async execute(args, state) {
+      const parts = args.trim().split(/\s+/);
+      const sub = parts[0] || "inspect";
+
       if (sub === "inspect" || sub === "clear") {
         return { output: `  Context ${sub}: available during pipeline execution.` };
       }
-      return { output: `  Unknown: /context ${sub}. Use inspect or clear.` };
+
+      // Snapshot operations need a context store — only available with a project workspace
+      const { existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const projectDir = getProjectDir(state.workingDir);
+      const dbPath = join(projectDir, "context.db");
+
+      if (!existsSync(dbPath)) {
+        return { output: "  No context store found. Run a pipeline first to create one." };
+      }
+
+      const { createContextStore } = await import("../../context/store");
+      const store = createContextStore({ dbPath });
+
+      try {
+        if (sub === "stats") {
+          const result = store.compressionStats();
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          const stats = result.value;
+          return {
+            output:
+              "  Context compression:\n" +
+              `    Entries: ${stats.totalEntries} (${stats.compressedEntries} compressed)\n` +
+              `    Raw bytes: ${stats.totalRawBytes}\n` +
+              `    Stored bytes: ${stats.totalStoredBytes}\n` +
+              `    Saved bytes: ${stats.savedBytes}\n` +
+              `    Ratio: ${(stats.ratio * 100).toFixed(1)}%`,
+          };
+        }
+
+        if (sub === "save") {
+          const name = parts.slice(1).join(" ") || `manual-${new Date().toISOString().slice(0, 19)}`;
+          const result = store.saveSnapshot(name, "user");
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          return { output: `  Saved snapshot "${result.value.name}" (${result.value.entryCount} entries, id: ${result.value.id})` };
+        }
+
+        if (sub === "restore") {
+          const id = parts[1];
+          if (!id) return { output: "  Usage: /context restore <snapshot-id>" };
+          const result = store.restoreSnapshot(id);
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          return { output: `  Restored ${result.value.restored} entries from snapshot.` };
+        }
+
+        if (sub === "snapshots" || sub === "ls") {
+          const result = store.listSnapshots();
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          if (result.value.length === 0) {
+            return { output: "  No snapshots. Use /context save <name> to create one." };
+          }
+          const lines = result.value.map((s) => {
+            const desc = s.description ? ` — ${s.description}` : "";
+            return `    ${s.id}  ${s.name}  (${s.entryCount} entries, ${s.createdAt.slice(0, 19)})${desc}`;
+          });
+          return { output: `  Snapshots:\n${lines.join("\n")}` };
+        }
+
+        if (sub === "delete-snapshot" || sub === "rm-snapshot") {
+          const id = parts[1];
+          if (!id) return { output: "  Usage: /context delete-snapshot <snapshot-id>" };
+          const result = store.deleteSnapshot(id);
+          if (!result.ok) return { output: `  Error: ${result.error.message}` };
+          return { output: result.value ? `  Deleted snapshot ${id}.` : `  Snapshot not found: ${id}` };
+        }
+
+        return { output: `  Unknown: /context ${sub}. Use inspect, clear, stats, save, restore, snapshots, or delete-snapshot.` };
+      } finally {
+        store.close();
+      }
     },
   },
   {
@@ -748,6 +820,44 @@ const commands: SlashCommand[] = [
       lines.push(`  Total: ${fmt(t.usage.totalTokens)} tok   ${fmtCost(t.cost)}`);
       lines.push("");
       return { output: lines.join("\n") };
+    },
+  },
+  {
+    name: "permissions",
+    aliases: ["perms"],
+    description: "Manage persistent permission rules",
+    usage: "[list|reset|remove <tool> [pattern]]",
+    async execute(args) {
+      const parts = args.trim().split(/\s+/);
+      const sub = parts[0] || "list";
+      const store = createPermissionStore();
+
+      if (sub === "list" || sub === "ls") {
+        const rules = store.listRules();
+        if (rules.length === 0) {
+          return { output: "  No permission rules saved.\n  Rules are created when you choose \"allow always\" or \"deny always\" during execution." };
+        }
+        const lines = rules.map((r) => {
+          const icon = r.action === "allow" ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
+          return `    ${icon} ${r.action.padEnd(5)} ${r.tool.padEnd(14)} ${r.pattern}`;
+        });
+        return { output: `  Permission rules:\n${lines.join("\n")}` };
+      }
+
+      if (sub === "reset" || sub === "clear") {
+        store.clearRules();
+        return { output: "  All permission rules cleared." };
+      }
+
+      if (sub === "remove" || sub === "rm") {
+        const tool = parts[1];
+        if (!tool) return { output: "  Usage: /permissions remove <tool> [pattern]" };
+        const pattern = parts[2];
+        const count = store.removeRule(tool, pattern);
+        return { output: count > 0 ? `  Removed ${count} rule(s).` : "  No matching rules found." };
+      }
+
+      return { output: `  Unknown: /permissions ${sub}. Use list, reset, or remove.` };
     },
   },
   {

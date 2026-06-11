@@ -15,6 +15,8 @@ import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createContextStore } from "../../context/store";
 import { createEventBus } from "../../core/events/event-bus";
+import { createPermissionEngine } from "../../core/permissions";
+import type { PermissionMode } from "../../core/permissions";
 import { executePipeline } from "../../pipeline/executor";
 import { parsePipeline } from "../../pipeline/parser";
 import { createPolicyEngine } from "../../policies/engine";
@@ -36,12 +38,26 @@ export type RunEvent = {
   payload: unknown;
 };
 
+type ErrorRecoveryGate = {
+  stageName: string;
+  error: string;
+  resolve: (action: "retry" | "skip" | "abort") => void;
+};
+
 type ActiveRun = {
   runId: string;
   controller: AbortController;
   seq: number;
   startedAtMs: number;
   subscribers: Set<(evt: RunEvent) => void>;
+  permissionEngine?: import("../../core/permissions").PermissionEngine;
+  pendingErrorRecovery?: ErrorRecoveryGate;
+  accumulatedTokens: number;
+  accumulatedCost: number;
+  /** Pending user messages to inject into the orchestrator's next iteration. */
+  injectedMessages: string[];
+  /** Whether this run's pipeline is orchestrated (only orchestrated runs accept messages). */
+  isOrchestrated: boolean;
 };
 
 const active = new Map<string, ActiveRun>();
@@ -62,6 +78,77 @@ export function cancelRun(runId: string): boolean {
   if (!a) return false;
   a.controller.abort();
   return true;
+}
+
+/**
+ * Resolve a pending permission request for an active run.
+ * Returns true if the request was found and resolved.
+ */
+export function resolvePermission(
+  runId: string,
+  requestId: string,
+  action: "allow" | "deny",
+  remember: boolean,
+): boolean {
+  const a = active.get(runId);
+  if (!a?.permissionEngine) return false;
+  return a.permissionEngine.confirmations().resolve(requestId, { action, remember });
+}
+
+/**
+ * Resolve a pending error recovery decision for an active run.
+ */
+export function resolveErrorRecovery(
+  runId: string,
+  action: "retry" | "skip" | "abort",
+): boolean {
+  const a = active.get(runId);
+  if (!a?.pendingErrorRecovery) return false;
+  a.pendingErrorRecovery.resolve(action);
+  a.pendingErrorRecovery = undefined;
+  return true;
+}
+
+/**
+ * Get the pending error recovery state for an active run, if any.
+ */
+export function getPendingErrorRecovery(runId: string): { stageName: string; error: string } | null {
+  const a = active.get(runId);
+  if (!a?.pendingErrorRecovery) return null;
+  return { stageName: a.pendingErrorRecovery.stageName, error: a.pendingErrorRecovery.error };
+}
+
+/**
+ * Inject a user message into a running orchestrated pipeline.
+ * The message will be delivered to the orchestrator on its next agent loop iteration.
+ * Returns true if the message was accepted, false if the run is not active or not orchestrated.
+ */
+export function injectMessage(runId: string, message: string): boolean {
+  const a = active.get(runId);
+  if (!a || !a.isOrchestrated) return false;
+  a.injectedMessages.push(message);
+  return true;
+}
+
+/**
+ * List pending permission requests for an active run.
+ */
+export function listPendingPermissions(runId: string): Array<{
+  id: string;
+  tool: string;
+  risk: string;
+  description: string;
+  subject: string;
+}> {
+  const a = active.get(runId);
+  if (!a?.permissionEngine) return [];
+  return a.permissionEngine.confirmations().pending().map((p) => ({
+    id: p.request.id,
+    tool: p.request.tool,
+    risk: p.request.risk,
+    description: p.request.description,
+    subject: p.request.subject,
+  }));
 }
 
 function emitRunEvent(run: ActiveRun, type: string, payload: unknown): void {
@@ -147,10 +234,27 @@ export async function startRun(
     seq: 0,
     startedAtMs: Date.now(),
     subscribers: new Set(),
+    accumulatedTokens: 0,
+    accumulatedCost: 0,
+    injectedMessages: [],
+    isOrchestrated: config.mode === "orchestrated",
   };
   active.set(runId, runState);
 
   const eventBus = createEventBus();
+  // Track tokens from stage completions and delegate completions for error-path recovery
+  eventBus.on("stage:complete", (evt) => {
+    if (evt.type === "stage:complete" && evt.result?.usage) {
+      runState.accumulatedTokens += evt.result.usage.totalTokens ?? 0;
+      runState.accumulatedCost += evt.result.cost ?? 0;
+    }
+  });
+  eventBus.on("delegate:complete", (evt) => {
+    if (evt.type === "delegate:complete" && evt.result?.usage) {
+      runState.accumulatedTokens += evt.result.usage.totalTokens ?? 0;
+      runState.accumulatedCost += evt.result.cost ?? 0;
+    }
+  });
   eventBus.onAny((evt: PipelineEvent) => {
     emitRunEvent(runState, evt.type, evt);
   });
@@ -197,6 +301,23 @@ export async function startRun(
 
   const skillsDir = getProjectSkillsDir(workingDir);
 
+  // Create permission engine for this run (UI resolves via POST /api/runs/:id/permission)
+  const permissionMode: PermissionMode = (config.permissions as PermissionMode) ?? "confirm";
+  const permissionEngine = createPermissionEngine({
+    mode: permissionMode,
+    workingDir,
+    eventBus,
+  });
+  runState.permissionEngine = permissionEngine;
+
+  // Error recovery callback for UI: blocks until the UI posts an action
+  async function onStageError(stageName: string, error: string): Promise<"retry" | "skip" | "abort"> {
+    return new Promise<"retry" | "skip" | "abort">((resolve) => {
+      runState.pendingErrorRecovery = { stageName, error, resolve };
+      emitRunEvent(runState, "stage:error-paused", { stageName, error });
+    });
+  }
+
   // Run in the background — do NOT await before returning.
   (async () => {
     try {
@@ -209,13 +330,19 @@ export async function startRun(
         workingDir,
         skillsDir,
         signal: controller.signal,
+        permissionEngine,
+        onStageError,
+        getInjectedMessages: runState.isOrchestrated ? () => {
+          const msgs = runState.injectedMessages.splice(0);
+          return msgs.map((m) => ({ role: "user" as const, content: m }));
+        } : undefined,
       });
 
       if (!result.ok) {
         finishRun(
           runState,
           controller.signal.aborted ? "cancelled" : "failed",
-          { tokens: 0, cost: 0 },
+          { tokens: runState.accumulatedTokens, cost: runState.accumulatedCost },
           result.error.message,
         );
       } else {
@@ -232,7 +359,7 @@ export async function startRun(
         });
       }
     } catch (e) {
-      finishRun(runState, controller.signal.aborted ? "cancelled" : "failed", { tokens: 0, cost: 0 }, (e as Error).message);
+      finishRun(runState, controller.signal.aborted ? "cancelled" : "failed", { tokens: runState.accumulatedTokens, cost: runState.accumulatedCost }, (e as Error).message);
     } finally {
       contextStore.close();
       active.delete(runId);
