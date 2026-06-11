@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light" />
+<title>OpenThinking — Pipelines de IA como código</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  /* ─── OpenThinking design tokens (mirrors src/ui/web/src/index.css) ─── */
+  :root {
+    --cyan-100: #cffafe;
+    --cyan-300: #67e8f9;
+    --cyan-400: #22d3ee;
+    --cyan-500: #06b6d4;
+    --cyan-600: #0891b2;
+    --cyan-700: #0e7490;
+
+    --bg:        #fafbfb;
+    --bg-soft:   #f4f6f6;
+    --bg-card:   #ffffff;
+    --bg-hover:  #f0f3f3;
+    --border:    #e3e8e8;
+    --border-strong: #d0d7d7;
+    --fg:        #0e1414;
+    --fg-muted:  #5c6666;
+    --fg-dim:    #8a9393;
+    --ok:        #10b981;
+    --warn:      #f59e0b;
+    --err:       #ef4444;
+    --purple:    #8b5cf6;
+
+    --shadow-sm: 0 1px 2px rgba(14,20,20,.04);
+    --shadow-md: 0 1px 3px rgba(14,20,20,.04), 0 4px 12px rgba(14,20,20,.03);
+    --shadow-lg: 0 2px 8px rgba(14,20,20,.06), 0 12px 32px rgba(14,20,20,.04);
+
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --ease-out: cubic-bezier(.16, 1, .3, 1);
+    --ease-in:  cubic-bezier(.4, 0, 1, 1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--fg);
+    letter-spacing: -0.003em;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    /* dot grid, same motif as the flow editor canvas */
+    background-image: radial-gradient(circle, rgba(208,215,215,.45) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  ::selection { background: rgba(6,182,212,.25); }
+
+  .mono { font-family: var(--font-mono); font-variant-ligatures: none; }
+
+  /* ─── Deck chrome ─── */
+
+  #progress-track {
+    position: fixed; inset: 0 0 auto 0; height: 2px;
+    background: var(--border); z-index: 50;
+  }
+  #progress {
+    height: 100%; background: var(--cyan-500); width: 0%;
+    transition: width .5s var(--ease-out);
+    view-transition-name: ot-progress;
+  }
+
+  #corner-mark {
+    position: fixed; top: 22px; left: 26px; z-index: 40;
+    display: flex; align-items: center; gap: 9px;
+    opacity: 0; transition: opacity .45s var(--ease-out);
+    pointer-events: none;
+  }
+  body[data-slide]:not([data-slide="0"]) #corner-mark { opacity: 1; }
+  #corner-mark svg { display: block; }
+  #corner-mark .wordmark {
+    font-size: 13px; font-weight: 600; letter-spacing: -.2px;
+  }
+  #corner-mark .wordmark b { color: var(--cyan-500); font-weight: 600; }
+
+  /* Controls: a whisper of UI — fade in on mouse activity, gone when idle */
+  #hud {
+    position: fixed; right: 26px; bottom: 20px; z-index: 40;
+    display: flex; align-items: center; gap: 14px;
+    opacity: 0; transition: opacity .4s ease;
+  }
+  body.hud-visible #hud { opacity: 1; }
+
+  #counter {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--fg-dim); letter-spacing: .08em;
+  }
+  #counter b { color: var(--fg-muted); font-weight: 500; }
+
+  .nav-btn {
+    width: 30px; height: 30px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg-card);
+    color: var(--fg-muted); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    box-shadow: var(--shadow-sm); transition: all .2s;
+  }
+  .nav-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--fg); }
+  .nav-btn:active { transform: scale(.94); }
+  .nav-btn svg { width: 13px; height: 13px; }
+
+  #hint {
+    position: fixed; left: 26px; bottom: 22px; z-index: 40;
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em;
+    color: var(--fg-dim);
+    opacity: 0; transition: opacity .4s ease;
+  }
+  body.hud-visible #hint { opacity: .9; }
+  #hint kbd {
+    font-family: inherit; font-size: 10px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg-card); padding: 1px 5px; color: var(--fg-muted);
+  }
+
+  /* invisible click zones at the edges */
+  .edge { position: fixed; top: 0; bottom: 0; width: 9%; z-index: 30; }
+  .edge.prev { left: 0; cursor: w-resize; }
+  .edge.next { right: 0; cursor: e-resize; }
+
+  /* ─── Morphing accent shape (shared element across slides) ─── */
+  #morph {
+    position: fixed; z-index: 1; pointer-events: none;
+    border: 1.5px solid rgba(6,182,212,.5);
+    background: linear-gradient(135deg, rgba(6,182,212,.06), rgba(6,182,212,.015));
+    view-transition-name: ot-morph;
+    transition: all .8s var(--ease-out);
+  }
+  #morph::after {
+    content: ""; position: absolute; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--cyan-500);
+    top: -4px; left: 32%;
+    box-shadow: 0 0 18px 2px rgba(6,182,212,.45);
+  }
+
+  /* ─── Slides ─── */
+
+  #stage { position: relative; height: 100%; z-index: 10; }
+
+  .slide {
+    position: absolute; inset: 0; display: none;
+    padding: clamp(40px, 7vh, 84px) clamp(40px, 8vw, 130px);
+  }
+  .slide.active { display: flex; flex-direction: column; justify-content: center; view-transition-name: ot-slide; }
+
+  .kicker {
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--cyan-600);
+    display: flex; align-items: center; gap: 12px; margin-bottom: 26px;
+  }
+  .kicker::before { content: ""; width: 26px; height: 1.5px; background: var(--cyan-500); }
+  .kicker .idx { color: var(--fg-dim); letter-spacing: .08em; }
+
+  h1 {
+    font-size: clamp(40px, 6.2vw, 84px); font-weight: 800;
+    letter-spacing: -.035em; line-height: 1.02;
+  }
+  h2 {
+    font-size: clamp(30px, 4.1vw, 54px); font-weight: 700;
+    letter-spacing: -.03em; line-height: 1.06; max-width: 18em;
+  }
+  .accent { color: var(--cyan-500); }
+  .underline-accent {
+    text-decoration: underline;
+    text-decoration-color: var(--cyan-400);
+    text-decoration-thickness: 3px;
+    text-underline-offset: 7px;
+  }
+
+  .lede {
+    margin-top: 26px; font-size: clamp(15px, 1.45vw, 19px);
+    color: var(--fg-muted); line-height: 1.65; max-width: 36em;
+  }
+  .lede strong { color: var(--fg); font-weight: 600; }
+  .lede code, li code, .cell code {
+    font-family: var(--font-mono); font-size: .88em;
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 5px; padding: .1em .38em; color: var(--cyan-700);
+  }
+
+  /* staggered entrance for slide children */
+  .slide.active .in {
+    animation: rise .7s var(--ease-out) both;
+  }
+  .slide.active .in:nth-child(2) { animation-delay: .07s; }
+  .slide.active .in:nth-child(3) { animation-delay: .14s; }
+  .slide.active .in:nth-child(4) { animation-delay: .21s; }
+  .slide.active .in:nth-child(5) { animation-delay: .28s; }
+  .slide.active .in:nth-child(6) { animation-delay: .35s; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(22px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* ─── Reusable blocks ─── */
+
+  .cards { display: grid; gap: 14px; margin-top: 42px; }
+  .cards.c2 { grid-template-columns: 1fr 1fr; }
+  .cards.c3 { grid-template-columns: repeat(3, 1fr); }
+  .cards.c4 { grid-template-columns: repeat(4, 1fr); }
+
+  .cell {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px 24px; box-shadow: var(--shadow-sm);
+  }
+  .cell .t {
+    font-weight: 600; font-size: 15px; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 9px; margin-bottom: 8px;
+  }
+  .cell .t .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan-500); flex: none; }
+  .cell p { font-size: 13.5px; color: var(--fg-muted); line-height: 1.6; }
+  .cell.flat { box-shadow: none; background: transparent; }
+
+  ul.checks { margin-top: 38px; list-style: none; display: grid; gap: 16px; max-width: 44em; }
+  ul.checks li {
+    display: flex; gap: 16px; align-items: baseline;
+    font-size: clamp(15px, 1.5vw, 19px); color: var(--fg-muted); line-height: 1.55;
+  }
+  ul.checks li::before {
+    content: "·"; font-family: var(--font-mono); color: var(--cyan-500);
+    font-weight: 600; font-size: 1.4em; line-height: 1; transform: translateY(2px);
+  }
+  ul.checks li strong { color: var(--fg); font-weight: 600; }
+  ul.checks.bad li::before { content: "×"; color: var(--err); font-size: 1em; }
+
+  /* terminal / code panels */
+  .term {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow-md); overflow: hidden;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--bg-soft);
+  }
+  .term-bar .d { width: 9px; height: 9px; border-radius: 50%; background: var(--border-strong); }
+  .term-bar .name {
+    margin-left: 6px; font-family: var(--font-mono); font-size: 11px;
+    color: var(--fg-dim); letter-spacing: .05em;
+  }
+  .term pre {
+    font-family: var(--font-mono); font-size: clamp(11px, 1.05vw, 13.5px);
+    line-height: 1.65; padding: 20px 24px; overflow: auto;
+    font-variant-ligatures: none;
+  }
+  .term .k { color: var(--cyan-700); }          /* yaml keys */
+  .term .s { color: var(--ok); }                /* strings */
+  .term .c { color: var(--fg-dim); }            /* comments */
+  .term .n { color: var(--purple); }            /* literals */
+  .term .p { color: var(--fg-dim); }            /* punctuation */
+
+  /* pipeline flow diagram */
+  .flow { display: flex; align-items: stretch; gap: 0; margin-top: 46px; }
+  .flow .node {
+    flex: 1; background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 22px; box-shadow: var(--shadow-md);
+    position: relative;
+  }
+  .flow .node .stage {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--fg-dim); margin-bottom: 10px;
+  }
+  .flow .node .who { font-weight: 700; font-size: clamp(15px, 1.4vw, 19px); letter-spacing: -.01em; }
+  .flow .node .model {
+    margin-top: 6px; font-family: var(--font-mono); font-size: 12px; color: var(--cyan-600);
+  }
+  .flow .node .desc { margin-top: 12px; font-size: 13px; color: var(--fg-muted); line-height: 1.55; }
+  .flow .link {
+    flex: none; width: clamp(28px, 4vw, 64px); display: flex;
+    align-items: center; justify-content: center; position: relative;
+  }
+  .flow .link::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 0;
+    border-top: 1.5px dashed var(--border-strong);
+  }
+  .flow .link svg { position: relative; background: var(--bg); color: var(--cyan-500); }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .03em;
+    border: 1px solid var(--border); background: var(--bg-card);
+    border-radius: 999px; padding: 5px 13px; color: var(--fg-muted);
+  }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cyan-500); }
+  .pills { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 34px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(28px, 4vw, 64px); align-items: center; }
+
+  .footer-meta {
+    margin-top: 52px; display: flex; gap: 28px; align-items: center;
+    font-family: var(--font-mono); font-size: 12px; color: var(--fg-dim); letter-spacing: .04em;
+  }
+  .footer-meta span b { color: var(--fg-muted); font-weight: 500; }
+
+  /* ─── Per-slide tweaks ─── */
+
+  /* title */
+  #s0 { align-items: flex-start; }
+  #s0 .logo-row { display: flex; align-items: center; gap: 22px; margin-bottom: 38px; }
+  #s0 .wordsub {
+    font-family: var(--font-mono); font-size: 13px; letter-spacing: .22em;
+    text-transform: uppercase; color: var(--fg-dim);
+  }
+  #s0 h1 b { font-weight: 800; }
+  #s0 h1 .thin { font-weight: 400; color: var(--fg); }
+  #s0 .start-hint {
+    margin-top: 64px; font-family: var(--font-mono); font-size: 12px;
+    color: var(--fg-dim); letter-spacing: .08em; display: flex; align-items: center; gap: 10px;
+  }
+  #s0 .start-hint .caret { color: var(--cyan-500); animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+  .vs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 22px; align-items: stretch; margin-top: 44px; }
+  .vs .divider {
+    display: flex; align-items: center; font-family: var(--font-mono);
+    font-size: 11px; color: var(--fg-dim); letter-spacing: .12em;
+  }
+  .mode-card { padding: 28px 30px; }
+  .mode-card .mt {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--cyan-600); margin-bottom: 14px;
+  }
+  .mode-card h3 { font-size: clamp(18px, 1.9vw, 24px); letter-spacing: -.02em; margin-bottom: 12px; }
+  .mode-card p { font-size: 14px; color: var(--fg-muted); line-height: 1.65; }
+  .mode-card .mini {
+    margin-top: 18px; font-family: var(--font-mono); font-size: 12px; line-height: 1.8;
+    color: var(--fg-muted); background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; white-space: pre;
+  }
+
+  .loop-row { display: flex; gap: 0; align-items: center; margin-top: 48px; }
+  .loop-step {
+    flex: 1; text-align: center; background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 14px; box-shadow: var(--shadow-sm);
+  }
+  .loop-step .num {
+    font-family: var(--font-mono); font-size: 11px; color: var(--cyan-600);
+    letter-spacing: .14em; display: block; margin-bottom: 10px;
+  }
+  .loop-step .lt { font-weight: 600; font-size: clamp(14px, 1.3vw, 17px); }
+  .loop-step .ls { margin-top: 7px; font-size: 12.5px; color: var(--fg-muted); }
+  .loop-back {
+    margin-top: 22px; text-align: center; font-family: var(--font-mono);
+    font-size: 12px; color: var(--fg-dim); letter-spacing: .06em;
+  }
+  .loop-back b { color: var(--cyan-600); font-weight: 500; }
+
+  /* closing */
+  #s13 { align-items: flex-start; }
+  #s13 .repo {
+    margin-top: 46px; font-family: var(--font-mono);
+    font-size: clamp(14px, 1.6vw, 19px); color: var(--fg-muted);
+  }
+  #s13 .repo b { color: var(--fg); font-weight: 600; }
+  #s13 .repo .caret { color: var(--cyan-500); }
+
+  /* ─── View Transitions ─── */
+
+  @media (prefers-reduced-motion: no-preference) {
+    ::view-transition-group(ot-slide) { animation-duration: .55s; }
+
+    ::view-transition-old(ot-slide) {
+      animation: slide-out .3s var(--ease-in) both;
+    }
+    ::view-transition-new(ot-slide) {
+      animation: slide-in .55s var(--ease-out) both;
+    }
+    @keyframes slide-out {
+      to { opacity: 0; transform: translateY(-26px) scale(.985); filter: blur(3px); }
+    }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateY(34px) scale(.99); filter: blur(2px); }
+    }
+    /* reversed when navigating backwards */
+    :root.nav-back::view-transition-old(ot-slide) { animation-name: slide-out-back; }
+    :root.nav-back::view-transition-new(ot-slide) { animation-name: slide-in-back; }
+    @keyframes slide-out-back {
+      to { opacity: 0; transform: translateY(26px) scale(.985); filter: blur(3px); }
+    }
+    @keyframes slide-in-back {
+      from { opacity: 0; transform: translateY(-34px) scale(.99); filter: blur(2px); }
+    }
+
+    ::view-transition-group(ot-morph) {
+      animation-duration: .8s;
+      animation-timing-function: var(--ease-out);
+    }
+    ::view-transition-group(root) { animation: none; }
+    ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .slide.active .in, #s0 .start-hint .caret { animation: none !important; }
+    #morph { transition: none; }
+  }
+</style>
+</head>
+<body data-slide="0">
+
+<div id="progress-track"><div id="progress"></div></div>
+
+<!-- corner logomark, visible from slide 2 onwards -->
+<div id="corner-mark">
+  <svg width="24" height="24" viewBox="0 0 40 40" fill="none" stroke="var(--cyan-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 16l3 3-3 3" />
+    <path d="M14 9c-3 0-5 2-5 5 0 1 .3 2 .8 2.8-1 .7-1.8 2-1.8 3.2 0 1.5 1 2.8 2.3 3.2 0 2.3 1.8 4.3 4.2 4.3 1.5 0 2.7-.8 3.5-2V10.5a3.5 3.5 0 0 0-3-1.5z" />
+    <path d="M22 9c3 0 5 2 5 5 0 1-.3 2-.8 2.8 1 .7 1.8 2 1.8 3.2 0 1.5-1 2.8-2.3 3.2 0 2.3-1.8 4.3-4.2 4.3-1.5 0-2.7-.8-3.5-2V10.5A3.5 3.5 0 0 1 22 9z" />
+    <circle cx="14" cy="14" r="1.4" fill="var(--cyan-500)" />
+    <circle cx="22" cy="19" r="1.4" fill="var(--cyan-500)" />
+    <circle cx="14" cy="24" r="1.4" fill="var(--cyan-500)" />
+    <path d="M14 14l8 5M22 19l-8 5" stroke-width="1.3" />
+  </svg>
+  <span class="wordmark">Open<b>Thinking</b></span>
+</div>
+
+<!-- morphing accent shape, shared across slides -->
+<div id="morph" aria-hidden="true"></div>
+
+<main id="stage">
+
+  <!-- 00 · Portada -->
+  <section class="slide active" id="s0">
+    <div class="logo-row in">
+      <svg width="84" height="84" viewBox="0 0 40 40" fill="none" stroke="var(--cyan-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 16l3 3-3 3" />
+        <path d="M14 9c-3 0-5 2-5 5 0 1 .3 2 .8 2.8-1 .7-1.8 2-1.8 3.2 0 1.5 1 2.8 2.3 3.2 0 2.3 1.8 4.3 4.2 4.3 1.5 0 2.7-.8 3.5-2V10.5a3.5 3.5 0 0 0-3-1.5z" />
+        <path d="M22 9c3 0 5 2 5 5 0 1-.3 2-.8 2.8 1 .7 1.8 2 1.8 3.2 0 1.5-1 2.8-2.3 3.2 0 2.3-1.8 4.3-4.2 4.3-1.5 0-2.7-.8-3.5-2V10.5A3.5 3.5 0 0 1 22 9z" />
+        <circle cx="14" cy="14" r="1.4" fill="var(--cyan-500)" />
+        <circle cx="22" cy="19" r="1.4" fill="var(--cyan-500)" />
+        <circle cx="14" cy="24" r="1.4" fill="var(--cyan-500)" />
+        <path d="M14 14l8 5M22 19l-8 5" stroke-width="1.3" />
+      </svg>
+      <span class="wordsub">charla técnica · open source</span>
+    </div>
+    <h1 class="in">Open<span class="accent">Thinking</span><br /><span class="thin">pipelines de IA como código.</span></h1>
+    <p class="lede in">Un orquestador en el que <strong>varios LLMs colaboran</strong> sobre una misma tarea, con contexto compartido, permisos y herramientas. Definido en YAML. Ejecutado desde tu terminal.</p>
+    <div class="footer-meta in">
+      <span><b>TypeScript</b> + Bun</span>
+      <span>CLI-first</span>
+      <span class="mono">github.com/sicora-dev/open-thinking</span>
+    </div>
+    <div class="start-hint in"><span class="caret">▌</span> pulsa <span style="color:var(--fg-muted)">→</span> o haz clic para empezar</div>
+  </section>
+
+  <!-- 01 · El problema -->
+  <section class="slide" id="s1">
+    <div class="kicker in"><span class="idx">01</span> el problema</div>
+    <h2 class="in">Un LLM no es <span class="underline-accent">un equipo</span>.</h2>
+    <p class="lede in">Hoy trabajamos con los modelos uno a uno: cada persona, su chat, su prompt, su contexto. Eso no escala a un flujo de trabajo real.</p>
+    <ul class="checks bad in">
+      <li><strong>El contexto se evapora</strong> — lo que decidió el modelo que planifica nunca llega al que escribe código.</li>
+      <li><strong>Cero control</strong> — el modelo puede leer y escribir lo que quiera, sin límites de coste ni de alcance.</li>
+      <li><strong>Nada es reproducible</strong> — el flujo vive en la cabeza de cada dev, no en el repositorio.</li>
+      <li><strong>Un solo modelo para todo</strong> — aunque cada tarea tenga un modelo que la hace mejor (y más barato).</li>
+    </ul>
+  </section>
+
+  <!-- 02 · La idea -->
+  <section class="slide" id="s2">
+    <div class="kicker in"><span class="idx">02</span> la idea</div>
+    <h2 class="in">Declara el flujo. <span class="accent">Orquesta los modelos.</span></h2>
+    <p class="lede in">Un pipeline se define en YAML y se versiona con el código: etapas, dependencias, y <strong>un modelo distinto para cada etapa</strong>, todos trabajando sobre un contexto común.</p>
+    <div class="flow in">
+      <div class="node">
+        <div class="stage">stage · plan</div>
+        <div class="who">Planificación</div>
+        <div class="model">claude-opus-4-5</div>
+        <div class="desc">Analiza requisitos y produce el plan técnico.</div>
+      </div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="node">
+        <div class="stage">stage · code</div>
+        <div class="who">Desarrollo</div>
+        <div class="model">gpt-4o</div>
+        <div class="desc">Implementa leyendo el plan desde el contexto.</div>
+      </div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="node">
+        <div class="stage">stage · test</div>
+        <div class="who">Testing</div>
+        <div class="model">qwen2.5-coder · local</div>
+        <div class="desc">Genera y ejecuta tests sobre lo implementado.</div>
+      </div>
+    </div>
+    <div class="footer-meta in"><span>la analogía: <b>"Kubernetes para agentes de IA"</b> — tú declaras el estado, el orquestador lo ejecuta</span></div>
+  </section>
+
+  <!-- 03 · Qué es -->
+  <section class="slide" id="s3">
+    <div class="kicker in"><span class="idx">03</span> qué es openthinking</div>
+    <h2 class="in">CLI-first, abierto y <span class="accent">sin lock-in</span>.</h2>
+    <div class="cards c2 in" style="margin-top: 40px;">
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Shell interactiva (REPL)</div>
+        <p>Ejecutar <code>openthk</code> abre una shell al estilo Claude Code: slash commands para configurar (<code>/pipeline</code>, <code>/providers</code>) y lenguaje natural para ejecutar.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Un binario, cero fricción</div>
+        <p>TypeScript estricto sobre Bun, compilado a binario único con <code>bun build --compile</code>. SQLite embebido para el contexto. Sin servicios externos.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Cualquier proveedor</div>
+        <p>18+ proveedores en el catálogo — OpenAI, Anthropic, Google, Mistral, DeepSeek… y modelos locales con Ollama o llama.cpp. Mézclalos en un mismo pipeline.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Del equipo, no de la persona</div>
+        <p>El pipeline es un fichero YAML en el repo: se revisa en PRs, se versiona y cualquiera del equipo lo ejecuta igual.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 · YAML -->
+  <section class="slide" id="s4">
+    <div class="kicker in"><span class="idx">04</span> el pipeline</div>
+    <div class="split">
+      <div>
+        <h2 class="in">Todo cabe en <span class="accent">un YAML</span>.</h2>
+        <p class="lede in">Los proveedores se declaran solo por nombre: URLs y API keys se resuelven desde el catálogo y la config global (<code>~/.openthk</code>). Las dependencias entre etapas forman un DAG.</p>
+        <div class="pills in">
+          <span class="pill"><span class="dot"></span>depends_on → orden</span>
+          <span class="pill"><span class="dot"></span>etapas independientes → paralelo</span>
+          <span class="pill"><span class="dot"></span>context → permisos</span>
+        </div>
+      </div>
+      <div class="term in">
+        <div class="term-bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="name">pipeline.yaml</span></div>
+<pre><span class="k">name</span><span class="p">:</span> review-service
+<span class="k">mode</span><span class="p">:</span> sequential
+
+<span class="k">providers</span><span class="p">:</span>
+  <span class="p">-</span> anthropic   <span class="c"># resuelto del catálogo</span>
+  <span class="p">-</span> openai
+  <span class="p">-</span> ollama      <span class="c"># modelo local</span>
+
+<span class="k">stages</span><span class="p">:</span>
+  <span class="k">plan</span><span class="p">:</span>
+    <span class="k">provider</span><span class="p">:</span> anthropic
+    <span class="k">model</span><span class="p">:</span> claude-opus-4-5
+    <span class="k">skill</span><span class="p">:</span> core/arch-planner@1.0
+    <span class="k">context</span><span class="p">:</span> { <span class="k">write</span><span class="p">:</span> [<span class="s">"plan.*"</span>] }
+
+  <span class="k">code</span><span class="p">:</span>
+    <span class="k">provider</span><span class="p">:</span> openai
+    <span class="k">model</span><span class="p">:</span> gpt-4o
+    <span class="k">skill</span><span class="p">:</span> core/code-writer@1.0
+    <span class="k">depends_on</span><span class="p">:</span> [plan]
+    <span class="k">context</span><span class="p">:</span>
+      <span class="k">read</span><span class="p">:</span>  [<span class="s">"plan.*"</span>]
+      <span class="k">write</span><span class="p">:</span> [<span class="s">"code.*"</span>]</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 · Arquitectura -->
+  <section class="slide" id="s5">
+    <div class="kicker in"><span class="idx">05</span> arquitectura</div>
+    <h2 class="in">Del YAML a la ejecución.</h2>
+    <div class="flow in" style="margin-top: 52px;">
+      <div class="node">
+        <div class="stage">parser</div>
+        <div class="who">Parser + validador</div>
+        <div class="desc">Valida el YAML y resuelve cada proveedor a tipo, URL y credenciales.</div>
+      </div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="node">
+        <div class="stage">executor</div>
+        <div class="who">Executor (DAG)</div>
+        <div class="desc">Ordena etapas por dependencias y ejecuta el agent loop de cada una.</div>
+      </div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="node">
+        <div class="stage">providers</div>
+        <div class="who">Adaptadores LLM</div>
+        <div class="desc">Interfaz OpenAI-compatible común; adapters para Anthropic y Ollama. Streaming por SSE.</div>
+      </div>
+    </div>
+    <div class="cards c2 in" style="margin-top: 16px;">
+      <div class="cell">
+        <div class="t"><span class="dot" style="background: var(--purple)"></span>Context store</div>
+        <p>Clave-valor sobre SQLite con namespaces (<code>plan.architecture</code>) y búsqueda vectorial local. Es la memoria compartida del pipeline.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot" style="background: var(--warn)"></span>Policy engine</div>
+        <p>Se evalúa antes de cada lectura/escritura de contexto: glob matching, rate limits y límites de coste. Transversal a todo.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 · Modos -->
+  <section class="slide" id="s6">
+    <div class="kicker in"><span class="idx">06</span> dos modos de ejecución</div>
+    <h2 class="in">Plan estático o <span class="accent">decisión dinámica</span>.</h2>
+    <div class="vs in">
+      <div class="cell mode-card">
+        <div class="mt">mode: sequential</div>
+        <h3>El grafo manda</h3>
+        <p>Las etapas se ejecutan según <code>depends_on</code>. Determinista y predecible: ideal para flujos conocidos tipo plan → code → test. Las ramas independientes corren en paralelo.</p>
+        <div class="mini">plan ──▶ code ──▶ test
+        └─▶ docs   (en paralelo)</div>
+      </div>
+      <div class="divider">vs</div>
+      <div class="cell mode-card">
+        <div class="mt" style="color: var(--purple)">mode: orchestrated</div>
+        <h3>Un LLM dirige</h3>
+        <p>Una etapa con <code>role: orchestrator</code> decide en caliente a qué agente invocar y con qué tarea, mediante la tool <code>delegate(agent, task)</code>. Puede repetir agentes, iterar, replanificar.</p>
+        <div class="mini">orchestrator
+  ├─ delegate("architect", …)
+  ├─ delegate("coder", …)
+  └─ delegate("coder", "fix: …")</div>
+      </div>
+    </div>
+    <div class="footer-meta in"><span><b>Ctrl+C</b> cancela el run completo — AbortController propagado a todas las etapas</span></div>
+  </section>
+
+  <!-- 07 · Agent loop -->
+  <section class="slide" id="s7">
+    <div class="kicker in"><span class="idx">07</span> dentro de una etapa</div>
+    <h2 class="in">Cada etapa es <span class="underline-accent">un agente</span>.</h2>
+    <p class="lede in">No es una única llamada al modelo: es un bucle iterativo donde el LLM razona, usa herramientas y observa el resultado.</p>
+    <div class="loop-row in">
+      <div class="loop-step"><span class="num">01</span><span class="lt">chat</span><div class="ls">el modelo recibe skill + contexto</div></div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="loop-step"><span class="num">02</span><span class="lt">tool calls</span><div class="ls">decide qué herramientas usar</div></div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="loop-step"><span class="num">03</span><span class="lt">execute</span><div class="ls">el runtime las ejecuta de verdad</div></div>
+      <div class="link"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h9M9 4.5L12.5 8 9 11.5"/></svg></div>
+      <div class="loop-step"><span class="num">04</span><span class="lt">observe</span><div class="ls">el resultado vuelve al modelo</div></div>
+    </div>
+    <div class="loop-back in">↻ se repite hasta terminar o alcanzar <b>max_iterations</b></div>
+    <div class="pills in" style="justify-content: center;">
+      <span class="pill"><span class="dot"></span>read_file</span>
+      <span class="pill"><span class="dot"></span>write_file</span>
+      <span class="pill"><span class="dot"></span>list_files</span>
+      <span class="pill"><span class="dot"></span>run_command</span>
+      <span class="pill"><span class="dot"></span>search_files</span>
+      <span class="pill"><span class="dot" style="background: var(--purple)"></span>delegate · solo orquestador</span>
+    </div>
+  </section>
+
+  <!-- 08 · Contexto -->
+  <section class="slide" id="s8">
+    <div class="kicker in"><span class="idx">08</span> contexto compartido</div>
+    <div class="split">
+      <div>
+        <h2 class="in">La memoria <span class="accent">del equipo</span>.</h2>
+        <p class="lede in">Un store clave-valor con namespaces en notación de puntos. Cada etapa declara <strong>qué puede leer y qué puede escribir</strong> con patrones glob — escribir fuera de tu namespace es un error duro, no una sugerencia.</p>
+        <ul class="checks in">
+          <li><strong>SQLite embebido</strong> (<code>bun:sqlite</code>) — sin infraestructura que desplegar.</li>
+          <li><strong>Búsqueda vectorial local</strong> con vectra para recuperar contexto por semántica.</li>
+          <li><strong>TTL configurable</strong> — el contexto expira, p. ej. <code>7d</code>.</li>
+        </ul>
+      </div>
+      <div class="term in">
+        <div class="term-bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="name">context store</span></div>
+<pre><span class="c"># namespace · clave            quién escribe</span>
+plan.architecture              <span class="s">← plan</span>
+plan.endpoints                 <span class="s">← plan</span>
+code.files                     <span class="s">← code</span>
+code.decisions                 <span class="s">← code</span>
+test.results                   <span class="s">← test</span>
+
+<span class="c"># permisos de la etapa "code"</span>
+<span class="k">read</span><span class="p">:</span>  [<span class="s">"plan.*"</span>]   <span class="c"># ✓ plan.architecture</span>
+<span class="k">write</span><span class="p">:</span> [<span class="s">"code.*"</span>]   <span class="c"># ✗ test.results → error</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 · Skills -->
+  <section class="slide" id="s9">
+    <div class="kicker in"><span class="idx">09</span> skills</div>
+    <div class="split">
+      <div>
+        <h2 class="in">Comportamiento <span class="accent">reutilizable</span>.</h2>
+        <p class="lede in">Una skill empaqueta el prompt (<code>prompt.md</code>) y su manifiesto (<code>skill.yaml</code>). El manifiesto declara qué herramientas necesita — y eso se aplica <strong>en el registry de tools, no en el prompt</strong>: si una tool no está permitida, el modelo no puede llamarla por mucho que lo intente.</p>
+        <ul class="checks in">
+          <li><strong>Orden de resolución:</strong> YAML del pipeline → manifiesto de la skill → todas las tools.</li>
+          <li>Sin tipos de etapa hardcodeados: <strong>cada autor decide</strong> qué puede hacer su skill.</li>
+        </ul>
+      </div>
+      <div class="term in">
+        <div class="term-bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="name">skills/arch-planner/skill.yaml</span></div>
+<pre><span class="k">name</span><span class="p">:</span> arch-planner
+<span class="k">version</span><span class="p">:</span> <span class="s">"1.0"</span>
+<span class="k">description</span><span class="p">:</span> Produce un plan técnico.
+
+<span class="k">context</span><span class="p">:</span>
+  <span class="k">reads</span><span class="p">:</span>  [<span class="s">"input.*"</span>]
+  <span class="k">writes</span><span class="p">:</span> [<span class="s">"planner.*"</span>]
+
+<span class="c"># enforced a nivel de registry</span>
+<span class="k">allowed_tools</span><span class="p">:</span>
+  <span class="p">-</span> read_file
+  <span class="p">-</span> list_files
+  <span class="p">-</span> search_files
+  <span class="c"># sin write_file: solo planifica</span>
+
+<span class="k">constraints</span><span class="p">:</span>
+  <span class="k">min_tokens</span><span class="p">:</span> <span class="n">4000</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 · Políticas -->
+  <section class="slide" id="s10">
+    <div class="kicker in"><span class="idx">10</span> políticas</div>
+    <h2 class="in">Agentes con autonomía, <span class="underline-accent">no con impunidad</span>.</h2>
+    <p class="lede in">Las políticas se declaran en el YAML y se evalúan en runtime, antes de cada operación. Dar herramientas a un LLM exige poner barandillas.</p>
+    <div class="cards c3 in">
+      <div class="cell">
+        <div class="t"><span class="dot"></span>rate_limit</div>
+        <p>Límite de peticiones por etapa. Un agente en bucle no puede fundir tu cuota de API.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot" style="background: var(--warn)"></span>cost_limit</div>
+        <p>Coste máximo por run del pipeline. Si se supera, la ejecución se corta — no la factura.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot" style="background: var(--purple)"></span>audit_log</div>
+        <p>Traza de cada lectura, escritura y tool call. Sabes qué hizo cada modelo y cuándo.</p>
+      </div>
+    </div>
+    <div class="footer-meta in"><span>misma filosofía que los permisos de contexto: <b>denegar es un error duro</b>, visible y trazable</span></div>
+  </section>
+
+  <!-- 11 · Providers -->
+  <section class="slide" id="s11">
+    <div class="kicker in"><span class="idx">11</span> proveedores</div>
+    <h2 class="in">El modelo adecuado <span class="accent">para cada tarea</span>.</h2>
+    <p class="lede in">Todo se habla a través de una interfaz OpenAI-compatible; quien no la soporta nativamente recibe un adapter. Las API keys viven una sola vez en <code>~/.openthk</code> — configuradas con el wizard de <code>/providers setup</code>, nunca en el YAML.</p>
+    <div class="pills in" style="margin-top: 40px;">
+      <span class="pill"><span class="dot"></span>openai</span>
+      <span class="pill"><span class="dot"></span>anthropic</span>
+      <span class="pill"><span class="dot"></span>google</span>
+      <span class="pill"><span class="dot"></span>mistral</span>
+      <span class="pill"><span class="dot"></span>deepseek</span>
+      <span class="pill"><span class="dot"></span>xai</span>
+      <span class="pill"><span class="dot"></span>groq</span>
+      <span class="pill"><span class="dot"></span>openrouter</span>
+      <span class="pill"><span class="dot"></span>together</span>
+      <span class="pill"><span class="dot"></span>fireworks</span>
+      <span class="pill"><span class="dot"></span>cohere</span>
+      <span class="pill"><span class="dot"></span>azure</span>
+      <span class="pill"><span class="dot"></span>bedrock</span>
+      <span class="pill"><span class="dot" style="background: var(--ok)"></span>ollama · local</span>
+      <span class="pill"><span class="dot" style="background: var(--ok)"></span>lmstudio · local</span>
+      <span class="pill"><span class="dot" style="background: var(--ok)"></span>llama.cpp · local</span>
+    </div>
+    <div class="footer-meta in"><span>razonamiento caro donde aporta, <b>modelos locales gratis</b> donde basta — en el mismo pipeline</span></div>
+  </section>
+
+  <!-- 12 · Web UI -->
+  <section class="slide" id="s12">
+    <div class="kicker in"><span class="idx">12</span> más allá de la terminal</div>
+    <h2 class="in">Una UI local para <span class="accent">ver el pensamiento</span>.</h2>
+    <p class="lede in"><code>openthk ui start</code> sirve una interfaz solo en <code>127.0.0.1</code> — nada sale de tu máquina.</p>
+    <div class="cards c3 in">
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Editor visual de pipelines</div>
+        <p>Edita el grafo arrastrando nodos, con ida y vuelta al YAML, validación en vivo y lanzamiento de runs.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Runs en tiempo real</div>
+        <p>Cada etapa transmite su progreso por SSE: ves qué modelo está pensando, qué tools llama y qué escribe en el contexto.</p>
+      </div>
+      <div class="cell">
+        <div class="t"><span class="dot"></span>Pipelines, providers, skills</div>
+        <p>Vistas para gestionar todo el sistema, con el mismo lenguaje visual que estáis viendo en estas diapositivas.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13 · Cierre -->
+  <section class="slide" id="s13">
+    <div class="kicker in"><span class="idx">13</span> en resumen</div>
+    <h1 class="in" style="font-size: clamp(34px, 5vw, 68px); max-width: 14em;">Los flujos de IA del equipo, <span class="accent">versionados como código</span>.</h1>
+    <p class="lede in">YAML declarativo · multi-LLM · contexto compartido con permisos · skills reutilizables · políticas de coste y acceso · CLI + UI local.</p>
+    <div class="repo in mono"><span class="caret">&gt;_</span> github.com/<b>sicora-dev/open-thinking</b></div>
+    <div class="footer-meta in"><span>¿preguntas?</span><span class="mono">gracias ▌</span></div>
+  </section>
+
+</main>
+
+<!-- edge click zones -->
+<div class="edge prev" data-nav="-1" aria-hidden="true"></div>
+<div class="edge next" data-nav="1" aria-hidden="true"></div>
+
+<!-- minimal HUD -->
+<div id="hint"><kbd>←</kbd> <kbd>→</kbd> navegar · <kbd>f</kbd> pantalla completa</div>
+<div id="hud">
+  <span id="counter"><b>01</b> / 14</span>
+  <button class="nav-btn" data-nav="-1" aria-label="Anterior">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3L5 8l5 5"/></svg>
+  </button>
+  <button class="nav-btn" data-nav="1" aria-label="Siguiente">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>
+  </button>
+</div>
+
+<script>
+(() => {
+  const slides = Array.from(document.querySelectorAll(".slide"));
+  const N = slides.length;
+  const progress = document.getElementById("progress");
+  const counter = document.getElementById("counter");
+  const morph = document.getElementById("morph");
+  const root = document.documentElement;
+
+  // Per-slide geometry for the morphing accent shape:
+  // [top%, left%, width(px), height(px), border-radius, rotation(deg), opacity]
+  const shapes = [
+    [14, 64, 420, 420, "38% 62% 55% 45% / 45% 38% 62% 55%", -10, 1],   // portada
+    [58, 70, 300, 300, "50%", 0, .85],                                  // problema
+    [8,  10, 220, 220, "24px", 14, .8],                                 // idea
+    [62, 6,  260, 260, "30% 70% 70% 30% / 30% 30% 70% 70%", -18, .85],  // qué es
+    [10, 42, 180, 180, "50%", 0, .7],                                   // yaml
+    [66, 74, 280, 160, "999px", -8, .85],                               // arquitectura
+    [10, 46, 170, 170, "26px", 45, .75],                                // modos
+    [64, 8,  230, 230, "62% 38% 40% 60% / 55% 60% 40% 45%", 8, .85],    // agent loop
+    [12, 44, 190, 190, "50%", 0, .7],                                   // contexto
+    [66, 42, 210, 210, "24px", -12, .75],                               // skills
+    [12, 72, 300, 170, "999px", 10, .85],                               // políticas
+    [60, 78, 250, 250, "42% 58% 60% 40% / 50% 42% 58% 50%", -14, .85],  // providers
+    [10, 68, 210, 210, "28px", 20, .75],                                // web ui
+    [16, 66, 400, 400, "38% 62% 55% 45% / 45% 38% 62% 55%", -10, 1],    // cierre
+  ];
+
+  let current = 0;
+
+  function applyShape(i) {
+    const [top, left, w, h, radius, rot, op] = shapes[i];
+    morph.style.top = top + "%";
+    morph.style.left = left + "%";
+    morph.style.width = w + "px";
+    morph.style.height = h + "px";
+    morph.style.borderRadius = radius;
+    morph.style.transform = `rotate(${rot}deg)`;
+    morph.style.opacity = op;
+  }
+
+  function render(i) {
+    slides.forEach((s, j) => s.classList.toggle("active", j === i));
+    applyShape(i);
+    document.body.dataset.slide = i;
+    progress.style.width = (((i + 1) / N) * 100) + "%";
+    counter.innerHTML = `<b>${String(i + 1).padStart(2, "0")}</b> / ${String(N).padStart(2, "0")}`;
+    history.replaceState(null, "", "#" + (i + 1));
+  }
+
+  function go(i) {
+    i = Math.max(0, Math.min(N - 1, i));
+    if (i === current) return;
+    root.classList.toggle("nav-back", i < current);
+    current = i;
+    if (document.startViewTransition) {
+      document.startViewTransition(() => render(i));
+    } else {
+      render(i);
+    }
+  }
+
+  const next = () => go(current + 1);
+  const prev = () => go(current - 1);
+
+  // keyboard
+  addEventListener("keydown", (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    switch (e.key) {
+      case "ArrowRight": case "ArrowDown": case " ": case "PageDown": case "Enter":
+        e.preventDefault(); next(); break;
+      case "ArrowLeft": case "ArrowUp": case "PageUp": case "Backspace":
+        e.preventDefault(); prev(); break;
+      case "Home": e.preventDefault(); go(0); break;
+      case "End": e.preventDefault(); go(N - 1); break;
+      case "f": case "F":
+        document.fullscreenElement
+          ? document.exitFullscreen()
+          : document.documentElement.requestFullscreen().catch(() => {});
+        break;
+    }
+  });
+
+  // mouse: edge zones + hud buttons
+  document.querySelectorAll("[data-nav]").forEach((el) => {
+    el.addEventListener("click", () => go(current + Number(el.dataset.nav)));
+  });
+  // click on slide body advances (ignore text selection)
+  document.getElementById("stage").addEventListener("click", () => {
+    if (!getSelection().toString()) next();
+  });
+
+  // touch swipe
+  let touchX = null;
+  addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; }, { passive: true });
+  addEventListener("touchend", (e) => {
+    if (touchX === null) return;
+    const dx = e.changedTouches[0].clientX - touchX;
+    if (Math.abs(dx) > 48) (dx < 0 ? next() : prev());
+    touchX = null;
+  }, { passive: true });
+
+  // auto-hiding HUD
+  let hudTimer;
+  function wakeHud() {
+    document.body.classList.add("hud-visible");
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(() => document.body.classList.remove("hud-visible"), 2600);
+  }
+  addEventListener("mousemove", wakeHud);
+  addEventListener("touchstart", wakeHud, { passive: true });
+
+  // restore slide from URL hash
+  const fromHash = parseInt(location.hash.slice(1), 10);
+  current = Number.isFinite(fromHash) ? Math.max(0, Math.min(N - 1, fromHash - 1)) : 0;
+  render(current);
+})();
+</script>
+</body>
+</html>
