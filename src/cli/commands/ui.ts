@@ -90,19 +90,32 @@ export function registerUiCommand(program: Command): void {
     .description("Show UI server logs")
     .option("-f, --follow", "Follow log output")
     .action((options: { follow?: boolean }) => {
-      const path = getLogPath();
-      console.log(`Log file: ${path}\n`);
-      const args = options.follow ? ["-f", path] : [path];
-      const child = spawn("tail", args, { stdio: "inherit" });
-      child.on("exit", (code) => process.exit(code ?? 0));
+      const logPath = getLogPath();
+      console.log(`Log file: ${logPath}\n`);
+      if (process.platform === "win32") {
+        const psArgs = options.follow
+          ? ["-NoProfile", "-Command", `Get-Content -Path "${logPath}" -Tail 20 -Wait`]
+          : ["-NoProfile", "-Command", `Get-Content -Path "${logPath}"`];
+        const child = spawn("powershell.exe", psArgs, { stdio: "inherit" });
+        child.on("exit", (code) => process.exit(code ?? 0));
+      } else {
+        const args = options.follow ? ["-f", logPath] : [logPath];
+        const child = spawn("tail", args, { stdio: "inherit" });
+        child.on("exit", (code) => process.exit(code ?? 0));
+      }
     });
 }
 
 function openBrowser(url: string): void {
-  const platform = process.platform;
-  const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
   try {
-    spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+    if (process.platform === "darwin") {
+      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    } else if (process.platform === "win32") {
+      // "start" is a cmd.exe built-in, not a standalone executable
+      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    }
   } catch {
     // ignore — best-effort
   }

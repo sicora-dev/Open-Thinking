@@ -161,15 +161,11 @@ export function Layout({ active, children, onOpenPalette }: LayoutProps) {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 8,
               marginBottom: 14,
               padding: "2px 4px",
             }}
           >
-            <Logomark size={22} />
-            <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: -0.2 }}>
-              Open<span style={{ color: "var(--cyan-500)" }}>Thinking</span>
-            </span>
+            <Logomark height={22} />
           </div>
 
           {/* Project selector */}
